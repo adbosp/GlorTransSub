@@ -69,3 +69,81 @@ The repository does not include any virtual environment directories (.venv).
 Dependencies must be installed manually using:
 
 pip install -r requirements.txt
+
+Installation (Development Setup)
+
+This project uses a Python virtual environment (venv) to manage dependencies.
+Please follow the steps below to set up the development environment locally.
+
+Prerequisites
+
+Python 3.9+ (recommended)
+
+Windows operating system
+
+Git
+
+Make sure Python is available in your system path:
+
+python --version
+
+Setup Virtual Environment
+
+Clone the repository:
+
+git clone https://github.com/adbosp/GlorTransSub.git
+cd GlorTransSub
+
+
+Create a virtual environment:
+
+python -m venv .venv
+
+
+Activate the virtual environment (Windows):
+
+.venv\Scripts\activate
+
+
+After activation, your terminal should show:
+
+(.venv)
+
+Install Dependencies
+
+Install all required dependencies using requirements.txt:
+
+pip install -r requirements.txt
+
+
+If pip is outdated, upgrade it first:
+
+python -m pip install --upgrade pip
+
+Running the Application
+
+Run the application using:
+
+python main.py
+
+
+The application will start in the background and may display a system tray icon depending on the current implementation.
+
+Build Windows Executable (Optional)
+
+To build a standalone Windows executable:
+
+pyinstaller --onefile --noconsole main.py
+
+
+The generated executable will be located in:
+
+dist/
+
+Notes
+
+The virtual environment directory (.venv) is intentionally excluded from the repository.
+
+Always activate the virtual environment before running or building the project.
+
+If you encounter missing module errors, ensure all dependencies are installed correctly inside the active virtual environment.
