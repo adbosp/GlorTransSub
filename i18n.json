@@ -1,0 +1,87 @@
+{
+  "en": {
+    "HELLO": "Hello!",
+    "SETTINGS_TITLE": "Settings",
+    "LISTENING": "Listening…"
+  },
+  "fr": {
+    "HELLO": "Bonjour !",
+    "SETTINGS_TITLE": "Paramètres",
+    "LISTENING": "Écoute…"
+  },
+  "de": {
+    "HELLO": "Hallo!",
+    "SETTINGS_TITLE": "Einstellungen",
+    "LISTENING": "Hören…"
+  },
+  "it": {
+    "HELLO": "Ciao!",
+    "SETTINGS_TITLE": "Impostazioni",
+    "LISTENING": "In ascolto…"
+  },
+  "ja": {
+    "HELLO": "こんにちは！",
+    "SETTINGS_TITLE": "設定",
+    "LISTENING": "認識中…"
+  },
+  "zh-cn": {
+    "HELLO": "你好！",
+    "SETTINGS_TITLE": "设置",
+    "LISTENING": "正在监听…"
+  },
+  "ko": {
+    "HELLO": "안녕하세요!",
+    "SETTINGS_TITLE": "설정",
+    "LISTENING": "인식 중…"
+  },
+  "ru": {
+    "HELLO": "Здравствуйте!",
+    "SETTINGS_TITLE": "Настройки",
+    "LISTENING": "Прослушивание…"
+  },
+  "es": {
+    "HELLO": "¡Hola!",
+    "SETTINGS_TITLE": "Configuración",
+    "LISTENING": "Escuchando…"
+  },
+  "pt": {
+    "HELLO": "Olá!",
+    "SETTINGS_TITLE": "Configurações",
+    "LISTENING": "Ouvindo…"
+  },
+  "hi": {
+    "HELLO": "नमस्ते!",
+    "SETTINGS_TITLE": "सेटिंग्स",
+    "LISTENING": "सुन रहा है…"
+  },
+  "id": {
+    "HELLO": "Halo!",
+    "SETTINGS_TITLE": "Pengaturan",
+    "LISTENING": "Mendengarkan…"
+  },
+  "nl": {
+    "HELLO": "Hallo!",
+    "SETTINGS_TITLE": "Instellingen",
+    "LISTENING": "Luisteren…"
+  },
+  "ar": {
+    "HELLO": "مرحبا!",
+    "SETTINGS_TITLE": "الإعدادات",
+    "LISTENING": "جارٍ الاستماع…"
+  },
+  "tr": {
+    "HELLO": "Merhaba!",
+    "SETTINGS_TITLE": "Ayarlar",
+    "LISTENING": "Dinleniyor…"
+  },
+  "sv": {
+    "HELLO": "Hej!",
+    "SETTINGS_TITLE": "Inställningar",
+    "LISTENING": "Lyssnar…"
+  },
+  "vi": {
+    "HELLO": "Xin chào!",
+    "SETTINGS_TITLE": "Cài đặt",
+    "LISTENING": "Đang lắng nghe…"
+  }
+}

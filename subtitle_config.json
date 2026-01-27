@@ -1,0 +1,56 @@
+{
+  "ui_lang": "en",
+  "translate_source": "auto",
+  "translate_target": "vi",
+  "red_region": [
+    0,
+    900,
+    1920,
+    1080
+  ],
+  "yellow_region": [
+    0,
+    800,
+    1920,
+    900
+  ],
+  "settings": {
+    "font_size": 13,
+    "mouse_font_size": 13,
+    "bg_alpha": 92,
+    "bg_color": [
+      0,
+      0,
+      0
+    ],
+    "font_color": [
+      255,
+      255,
+      255
+    ],
+    "style": "centered",
+    "shadow_color": [
+      0,
+      0,
+      0
+    ],
+    "shadow_alpha": 200,
+    "shadow_offset": 4,
+    "stroke_width": 1,
+    "hotkey_pause": "F8",
+    "hotkey_settings": "F10",
+    "font_weight": 75,
+    "mouse_hold_key": "ctrl",
+    "mouse_ocr_enabled": true,
+    "outline_color": [
+      0,
+      0,
+      0
+    ]
+  },
+  "ocr_lang": "en",
+  "translate_engine": "google",
+  "hotkey_pause": "F8",
+  "hotkey_settings": "F10",
+  "run_on_startup": false
+}
