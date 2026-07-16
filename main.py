@@ -3,9 +3,17 @@ import os
 import json
 import time
 import hashlib
+import math
+import asyncio
+import queue
+import tempfile
+from collections import deque
 from pynput import mouse
 import re
 import numpy as np
+# PyTorch must load its Windows DLLs before PyQt5. With current releases,
+# importing Qt first can make c10.dll fail with WinError 1114.
+import torch
 from PyQt5 import QtWidgets, QtGui, QtCore
 from PIL import ImageGrab
 from smart_translator import SmartTranslator
@@ -161,6 +169,113 @@ TRANSLATE_LANGUAGES = {
     "ro": "Romanian",
     "hu": "Hungarian",
 }
+
+# EasyOCR and translation providers use different language codes for a few
+# languages. The UI exposes one input language and this map configures both
+# stages consistently.
+OCR_TO_TRANSLATE_LANGUAGE = {
+    "en": "en", "vi": "vi", "ja": "ja", "ko": "ko",
+    "ch_sim": "zh-cn", "ch_tra": "zh-tw", "th": "th",
+    "id": "id", "ms": "ms", "fr": "fr", "de": "de",
+    "es": "es", "pt": "pt", "it": "it", "nl": "nl",
+    "ru": "ru", "pl": "pl", "tr": "tr", "uk": "uk",
+    "ar": "ar", "fa": "fa", "hi": "hi", "ur": "ur",
+    "sv": "sv", "no": "no", "da": "da", "fi": "fi",
+    "cs": "cs", "el": "el", "he": "he", "ro": "ro",
+    "hu": "hu",
+}
+
+INPUT_LANGUAGE_LABELS = {
+    ocr_code: TRANSLATE_LANGUAGES[translate_code]
+    for ocr_code, translate_code in OCR_TO_TRANSLATE_LANGUAGE.items()
+}
+
+VOICE_OPTIONS = {
+    "vi-VN": {
+        "label": "Vietnamese",
+        "voices": [("HoaiMy (Female)", "vi-VN-HoaiMyNeural"), ("NamMinh (Male)", "vi-VN-NamMinhNeural")],
+    },
+    "en-US": {
+        "label": "English (US)",
+        "voices": [("Aria (Female)", "en-US-AriaNeural"), ("Guy (Male)", "en-US-GuyNeural")],
+    },
+    "ja-JP": {
+        "label": "Japanese",
+        "voices": [("Nanami (Female)", "ja-JP-NanamiNeural"), ("Keita (Male)", "ja-JP-KeitaNeural")],
+    },
+    "ko-KR": {
+        "label": "Korean",
+        "voices": [("SunHi (Female)", "ko-KR-SunHiNeural"), ("InJoon (Male)", "ko-KR-InJoonNeural")],
+    },
+    "zh-CN": {
+        "label": "Chinese (Simplified)",
+        "voices": [("Xiaoxiao (Female)", "zh-CN-XiaoxiaoNeural"), ("Yunxi (Male)", "zh-CN-YunxiNeural")],
+    },
+    "zh-TW": {
+        "label": "Chinese (Traditional)",
+        "voices": [("HsiaoChen (Female)", "zh-TW-HsiaoChenNeural"), ("YunJhe (Male)", "zh-TW-YunJheNeural")],
+    },
+    "th-TH": {
+        "label": "Thai",
+        "voices": [("Premwadee (Female)", "th-TH-PremwadeeNeural"), ("Niwat (Male)", "th-TH-NiwatNeural")],
+    },
+    "id-ID": {
+        "label": "Indonesian",
+        "voices": [("Gadis (Female)", "id-ID-GadisNeural"), ("Ardi (Male)", "id-ID-ArdiNeural")],
+    },
+    "fr-FR": {
+        "label": "French",
+        "voices": [("Denise (Female)", "fr-FR-DeniseNeural"), ("Henri (Male)", "fr-FR-HenriNeural")],
+    },
+    "de-DE": {
+        "label": "German",
+        "voices": [("Katja (Female)", "de-DE-KatjaNeural"), ("Conrad (Male)", "de-DE-ConradNeural")],
+    },
+    "es-ES": {
+        "label": "Spanish",
+        "voices": [("Elvira (Female)", "es-ES-ElviraNeural"), ("Alvaro (Male)", "es-ES-AlvaroNeural")],
+    },
+    "pt-BR": {
+        "label": "Portuguese (Brazil)",
+        "voices": [("Francisca (Female)", "pt-BR-FranciscaNeural"), ("Antonio (Male)", "pt-BR-AntonioNeural")],
+    },
+    "ru-RU": {
+        "label": "Russian",
+        "voices": [("Svetlana (Female)", "ru-RU-SvetlanaNeural"), ("Dmitry (Male)", "ru-RU-DmitryNeural")],
+    },
+}
+
+VOICE_LANGUAGE_BY_TRANSLATE_TARGET = {
+    "vi": "vi-VN",
+    "en": "en-US",
+    "ja": "ja-JP",
+    "ko": "ko-KR",
+    "zh-cn": "zh-CN",
+    "zh-tw": "zh-TW",
+    "th": "th-TH",
+    "id": "id-ID",
+    "fr": "fr-FR",
+    "de": "de-DE",
+    "es": "es-ES",
+    "pt": "pt-BR",
+    "ru": "ru-RU",
+}
+
+GAME_RULES_EXAMPLE = """[Speaker: Ethan -> Lisa]
+I = Con
+You = Mẹ
+
+[Speaker: Ethan -> John]
+I = tôi
+You = anh
+
+[Speaker: Lisa -> John]
+I = tôi
+You = ông
+
+[Speaker: Ethan]
+I = tôi
+You = bạn"""
 # ===== DEFAULT TARGET BY REGION =====
 REGION_TO_TRANSLATE_TARGET = {
     "vi": "vi",
@@ -234,7 +349,7 @@ def tr(key: str) -> str:
 # ====== CONFIG & PATH ======
 CAPTURE_FPS = 3
 CONFIG_FILE = "subtitle_config.json"
-APP_NAME = "ScreenTranslator"
+APP_NAME = "GloSub"
 # default regions (left, top, right, bottom)
 DEFAULT_RED_REGION = (0, 900, 1920, 1080)
 DEFAULT_YELLOW_REGION = (0, 800, 1920, 900)
@@ -319,7 +434,7 @@ def is_ctrl_pressed():
     return windll.user32.GetAsyncKeyState(0x11) & 0x8000
 # ====================== CTRL HOLD STATE TRACK ======================
 def update_mouse_hold_state():
-    global MOUSE_FOLLOW_ACTIVE
+    global MOUSE_FOLLOW_ACTIVE, mouse_pos, mouse_last_move_time, mouse_idle_triggered
 
     if MOUSE_MODE != "hold":
         return
@@ -328,6 +443,18 @@ def update_mouse_hold_state():
         if not MOUSE_FOLLOW_ACTIVE:
             MOUSE_FOLLOW_ACTIVE = True
             print("[MOUSE] Ctrl DOWN → FOLLOW ON")
+
+        cursor_pos = QtGui.QCursor.pos()
+        current_pos = (cursor_pos.x(), cursor_pos.y())
+        if current_pos != mouse_pos:
+            mouse_pos = current_pos
+            mouse_last_move_time = time.time()
+            mouse_idle_triggered = False
+
+        if MOUSE_OCR_ENABLED:
+            mouse_ocr_preview.show_at(
+                current_pos[0], current_pos[1], MOUSE_OCR_WIDTH, MOUSE_OCR_HEIGHT
+            )
     else:
         if MOUSE_FOLLOW_ACTIVE:
             MOUSE_FOLLOW_ACTIVE = False
@@ -347,19 +474,59 @@ def normalize_text(text: str) -> str:
     text = re.sub(r"[^\w\s]", "", text)
     return text.strip()
 
-def init_ocr_reader(lang="en"):
-    global reader
 
-    if reader is not None:
+def parse_context_dictionary(raw_text: str) -> dict:
+    """Parse one `source = preferred translation` glossary entry per line."""
+    entries = {}
+    for raw_line in (raw_text or "").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        source, target = (part.strip() for part in line.split("=", 1))
+        if source and target:
+            entries[source] = target
+    return entries
+
+
+def parse_game_dialogue_rules(raw_text: str) -> dict:
+    """Parse speaker-aware rules grouped by `[Speaker: Name -> Listener]`."""
+    rules = {}
+    current_key = None
+    header_pattern = re.compile(
+        r"^\[\s*Speaker\s*:\s*([^\]-]+?)\s*(?:->\s*([^\]]+?))?\s*\]$",
+        re.IGNORECASE,
+    )
+    for raw_line in (raw_text or "").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        header = header_pattern.match(line)
+        if header:
+            speaker = header.group(1).strip().casefold()
+            listener = (header.group(2) or "*").strip().casefold()
+            current_key = (speaker, listener)
+            rules.setdefault(current_key, {})
+            continue
+        if current_key and "=" in line:
+            source, target = (part.strip() for part in line.split("=", 1))
+            if source and target:
+                rules[current_key][source] = target
+    return rules
+
+def init_ocr_reader(lang="en"):
+    global reader, reader_language
+
+    if reader is not None and reader_language == lang:
         return
 
-    import torch
     import easyocr
 
     use_gpu = torch.cuda.is_available()
     print(f"[OCR] Using {'GPU' if use_gpu else 'CPU'}")
 
-    reader = easyocr.Reader([lang], gpu=use_gpu, verbose=False)
+    new_reader = easyocr.Reader([lang], gpu=use_gpu, verbose=False)
+    reader = new_reader
+    reader_language = lang
 
 # ====================== I18N LOAD ======================
 I18N = {}
@@ -407,7 +574,17 @@ def load_config():
             "font_weight": 75,
             "mouse_hold_key": "ctrl",
             "mouse_ocr_enabled": True,
-            "outline_color": [0, 0, 0]
+            "mouse_ocr_width": 300,
+            "mouse_ocr_height": 300,
+            "outline_color": [0, 0, 0],
+            "voice_enabled": False,
+            "voice_language": "vi-VN",
+            "voice": "vi-VN-HoaiMyNeural",
+            "context_enabled": False,
+            "context_mode": "video",
+            "context_memory_size": 10,
+            "context_dictionary": "",
+            "context_game_rules": ""
         }
     }
 
@@ -440,6 +617,9 @@ if "hotkey_pause" not in cfg:
 if "hotkey_settings" not in cfg:
     cfg["hotkey_settings"] = "F10"
 
+# Input language is the single source of truth for both OCR and translation.
+cfg["translate_source"] = OCR_TO_TRANSLATE_LANGUAGE.get(cfg["ocr_lang"], "en")
+
 # ====================== GLOBALS ======================
 # initialize EasyOCR reader according to saved config
 # ===== Edit Mode Snapshot =====
@@ -453,11 +633,12 @@ MOUSE_SUBTITLE_FONT_DELTA = 6   # px (<=10 để không quá khác subtitle cent
 
 mouse_subtitle_pos = None     # (x, y) vị trí hiển thị subtitle
 
-MOUSE_OCR_ENABLED = False          # bật chế độ mouse OCR
+# Loaded from config above; do not overwrite it during global initialization.
 EDIT_MODE_ACTIVE = False
 
 
-MOUSE_OCR_SIZE = 300               # px
+MOUSE_OCR_WIDTH = int(cfg.get("settings", {}).get("mouse_ocr_width", 300))
+MOUSE_OCR_HEIGHT = int(cfg.get("settings", {}).get("mouse_ocr_height", 300))
 MOUSE_OCR_DELAY = 0.1              # giây chuột đứng yên
 # ===== Mouse Subtitle Mode =====
 MOUSE_MODE = "hold"   # "hold" | "toggle"
@@ -472,6 +653,9 @@ mouse_idle_triggered = False  # 🔥 BẮT BUỘC – cờ idle chuột
 # ====================== Translator (initialized in main) ======================
 translator = None
 reader = None
+reader_language = None
+voice_speaker = None
+worker = None
 current_hotkey = None
 current_hotkey_subtitle = None
 current_hotkey_settings = None
@@ -480,6 +664,110 @@ _mouse_hook_registered = False
 # translator will be created in main() with safe fallback
 # global OCR reader (initialized lazily in OCRWorker)
 # track current hotkey to avoid duplicate registrations
+
+
+class VoiceSpeaker:
+    """Generate and play Edge TTS speech without blocking the Qt/OCR threads."""
+
+    def __init__(self, enabled=False, language="vi-VN", voice="vi-VN-HoaiMyNeural"):
+        self.enabled = bool(enabled)
+        self.language = language
+        self.voice = voice
+        self._queue = queue.Queue(maxsize=1)
+        self._stop_event = threading.Event()
+        self._thread = threading.Thread(target=self._run, name="VoiceSpeaker", daemon=True)
+        self._thread.start()
+
+    def configure(self, enabled, language, voice):
+        self.enabled = bool(enabled)
+        self.language = language
+        self.voice = voice
+        if not self.enabled:
+            self._clear_pending()
+            try:
+                import pygame
+                pygame.mixer.music.stop()
+            except Exception:
+                pass
+
+    def speak(self, text):
+        text = (text or "").strip()
+        if not self.enabled or not text:
+            return
+
+        # Realtime subtitles should speak the newest result, not build a long
+        # backlog when OCR changes faster than audio playback.
+        self._clear_pending()
+        try:
+            self._queue.put_nowait((text, self.voice))
+        except queue.Full:
+            pass
+
+    def _clear_pending(self):
+        while True:
+            try:
+                self._queue.get_nowait()
+            except queue.Empty:
+                return
+
+    def _run(self):
+        try:
+            import edge_tts
+            import pygame
+
+            pygame.mixer.init()
+        except Exception as exc:
+            print("[VOICE] Initialization failed:", exc)
+            return
+
+        while not self._stop_event.is_set():
+            try:
+                item = self._queue.get(timeout=0.2)
+            except queue.Empty:
+                continue
+
+            if item is None:
+                break
+
+            text, voice = item
+            audio_path = None
+            try:
+                with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as audio_file:
+                    audio_path = audio_file.name
+
+                asyncio.run(edge_tts.Communicate(text, voice).save(audio_path))
+                if not self.enabled or self._stop_event.is_set():
+                    continue
+
+                pygame.mixer.music.load(audio_path)
+                pygame.mixer.music.play()
+                while pygame.mixer.music.get_busy() and not self._stop_event.wait(0.05):
+                    pass
+                pygame.mixer.music.unload()
+            except Exception as exc:
+                print("[VOICE ERROR]", exc)
+            finally:
+                if audio_path:
+                    try:
+                        os.remove(audio_path)
+                    except OSError:
+                        pass
+
+        try:
+            pygame.mixer.music.stop()
+            pygame.mixer.quit()
+        except Exception:
+            pass
+
+    def stop(self):
+        self.enabled = False
+        self._stop_event.set()
+        self._clear_pending()
+        try:
+            self._queue.put_nowait(None)
+        except queue.Full:
+            pass
+        self._thread.join(timeout=2.0)
 
 
 # ====================== CLICK-THROUGH UTIL ======================
@@ -549,15 +837,24 @@ class MouseOCRPreview(QtWidgets.QWidget):
         self.setAttribute(QtCore.Qt.WA_TranslucentBackground)
         self.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents)
 
-        self._size = MOUSE_OCR_SIZE
+        self._width = MOUSE_OCR_WIDTH
+        self._height = MOUSE_OCR_HEIGHT
         self.hide()
 
-    def show_at(self, x: int, y: int, size: int):
-        self._size = size
-        half = size // 2
-        self.setGeometry(x - half, y - half, size, size)
-        self.show()
-        self.raise_()
+    def show_at(self, x: int, y: int, width: int, height: int):
+        self._width = width
+        self._height = height
+        geometry = QtCore.QRect(
+            x - width // 2,
+            y - height // 2,
+            width,
+            height,
+        )
+        if self.geometry() != geometry:
+            self.setGeometry(geometry)
+        if not self.isVisible():
+            self.show()
+            self.raise_()
 
     def paintEvent(self, event):
         painter = QtGui.QPainter(self)
@@ -566,16 +863,42 @@ class MouseOCRPreview(QtWidgets.QWidget):
         rect = self.rect().adjusted(2, 2, -2, -2)
 
         # 🌫 nền rất nhẹ
-        painter.setBrush(QtGui.QColor(0, 160, 255, 30))
+        painter.setBrush(QtGui.QColor(0, 160, 255, 42))
         painter.setPen(QtCore.Qt.NoPen)
-        painter.drawRoundedRect(rect, 8, 8)
+        painter.drawRoundedRect(rect, 10, 10)
 
         # 🔲 viền nét đứt
-        pen = QtGui.QPen(QtGui.QColor(0, 200, 255), 2)
+        pen = QtGui.QPen(QtGui.QColor(0, 210, 255), 3)
         pen.setStyle(QtCore.Qt.DashLine)
         painter.setPen(pen)
         painter.setBrush(QtCore.Qt.NoBrush)
-        painter.drawRoundedRect(rect, 8, 8)
+        painter.drawRoundedRect(rect, 10, 10)
+
+        center = self.rect().center()
+        painter.setPen(QtGui.QPen(QtGui.QColor(255, 255, 255, 220), 2))
+        painter.drawLine(center.x() - 12, center.y(), center.x() + 12, center.y())
+        painter.drawLine(center.x(), center.y() - 12, center.x(), center.y() + 12)
+
+        label_rect = QtCore.QRectF(10, 10, 178, 28)
+        painter.setPen(QtCore.Qt.NoPen)
+        painter.setBrush(QtGui.QColor(0, 80, 110, 225))
+        painter.drawRoundedRect(label_rect, 7, 7)
+        label_font = QtGui.QFont("Segoe UI", 9)
+        label_font.setBold(True)
+        painter.setFont(label_font)
+        painter.setPen(QtGui.QColor(255, 255, 255))
+        painter.drawText(label_rect, QtCore.Qt.AlignCenter, "OCR + TRANSLATE AREA")
+
+        size_rect = QtCore.QRectF(10, self.height() - 34, 112, 24)
+        painter.setPen(QtCore.Qt.NoPen)
+        painter.setBrush(QtGui.QColor(0, 0, 0, 170))
+        painter.drawRoundedRect(size_rect, 6, 6)
+        painter.setPen(QtGui.QColor(220, 245, 255))
+        painter.drawText(
+            size_rect,
+            QtCore.Qt.AlignCenter,
+            f"{self._width} x {self._height} px",
+        )
 
         painter.end()
 
@@ -689,6 +1012,11 @@ class SubtitleOverlay(QtWidgets.QWidget):
 
         # text content
         self.text = ""
+        # Transparent top-level windows can receive many identical repaint
+        # requests. Cache the finished subtitle instead of rebuilding its text
+        # layout and outline every time.
+        self._render_cache_key = None
+        self._render_cache_pixmap = None
 
         # drag state (only active in edit mode)
         self.edit_mode = False
@@ -762,6 +1090,7 @@ class SubtitleOverlay(QtWidgets.QWidget):
         # ensure style exists
         if "style" not in self.settings:
             self.settings["style"] = "centered"
+        self._invalidate_render_cache()
         self.update()
 
     def update_text(self, text):
@@ -771,11 +1100,29 @@ class SubtitleOverlay(QtWidgets.QWidget):
         if self.text == "HELLO WORLD!" and not text.strip():
             return
         self.text = text
+        self._invalidate_render_cache()
 
         # KHÔNG adjustSize trong paintEvent
         pass
 
         self.update()
+
+    def _invalidate_render_cache(self):
+        self._render_cache_key = None
+        self._render_cache_pixmap = None
+
+    def _current_render_key(self):
+        def stable_value(value):
+            if isinstance(value, QtGui.QColor):
+                return value.rgba()
+            if isinstance(value, (list, tuple)):
+                return tuple(stable_value(item) for item in value)
+            return value
+
+        settings_key = tuple(
+            sorted((key, stable_value(value)) for key, value in self.settings.items())
+        )
+        return (self.width(), self.height(), self.text, self.follow_mouse, settings_key)
     def reset_to_base_region(self):
         self.follow_mouse = False
         self.setFixedWidth(self.screen_w)
@@ -883,7 +1230,15 @@ class SubtitleOverlay(QtWidgets.QWidget):
 
         if not self.text and not self.edit_mode:
             return
-        painter = QtGui.QPainter(self)
+        cache_key = self._current_render_key()
+        if self._render_cache_key == cache_key and self._render_cache_pixmap is not None:
+            painter = QtGui.QPainter(self)
+            painter.drawPixmap(0, 0, self._render_cache_pixmap)
+            return
+
+        rendered = QtGui.QPixmap(self.size())
+        rendered.fill(QtCore.Qt.transparent)
+        painter = QtGui.QPainter(rendered)
         painter.setRenderHint(QtGui.QPainter.Antialiasing)
         rect = self.rect()
 
@@ -1028,10 +1383,18 @@ class SubtitleOverlay(QtWidgets.QWidget):
         painter.setPen(QtGui.QPen(outline_color, 1))
 
         # 🔥 Vẽ outline bằng nhiều offset xung quanh
-        for dx in range(-stroke_w, stroke_w + 1):
-            for dy in range(-stroke_w, stroke_w + 1):
-                if dx*dx + dy*dy > stroke_w*stroke_w:
-                    continue
+        if stroke_w > 0:
+            # Sampling the perimeter preserves the visible outline without
+            # repainting every point inside the stroke circle.
+            sample_count = max(8, stroke_w * 4)
+            outline_offsets = {
+                (
+                    round(math.cos(2 * math.pi * index / sample_count) * stroke_w),
+                    round(math.sin(2 * math.pi * index / sample_count) * stroke_w),
+                )
+                for index in range(sample_count)
+            }
+            for dx, dy in outline_offsets:
                 for line in lines:
                     line.draw(
                         painter,
@@ -1045,6 +1408,13 @@ class SubtitleOverlay(QtWidgets.QWidget):
         painter.setPen(QtGui.QPen(text_color, 1))
         for line in lines:
             line.draw(painter, QtCore.QPointF(text_x, y_offset))
+        painter.end()
+        self._render_cache_key = cache_key
+        self._render_cache_pixmap = rendered
+
+        widget_painter = QtGui.QPainter(self)
+        widget_painter.drawPixmap(0, 0, rendered)
+        widget_painter.end()
         # finally, adjust overlay height if needed
         QtCore.QTimer.singleShot(
             0,
@@ -1235,6 +1605,184 @@ class OCRWorker(QtCore.QThread):
         # minimum delay between translation calls (seconds)
         self._translate_cooldown = 0.5
         self._last_mouse_text = ""
+        self._context_lock = threading.RLock()
+        self._context_memory = deque()
+        self._context_signature = None
+        context_settings = cfg.get("settings", {})
+        self.configure_context(
+            context_settings.get("context_enabled", False),
+            context_settings.get("context_mode", "video"),
+            context_settings.get("context_memory_size", 10),
+            context_settings.get("context_dictionary", ""),
+            context_settings.get("context_game_rules", ""),
+        )
+
+    def configure_context(
+        self, enabled, mode, memory_size, dictionary_text, game_rules_text=""
+    ):
+        memory_size = max(8, min(12, int(memory_size)))
+        mode = mode if mode in ("video", "game") else "video"
+        glossary = parse_context_dictionary(dictionary_text)
+        game_rules = parse_game_dialogue_rules(game_rules_text)
+
+        with self._context_lock:
+            previous = list(getattr(self, "_context_memory", []))[-memory_size:]
+            settings_changed = (
+                getattr(self, "_context_enabled", None) != bool(enabled)
+                or getattr(self, "_context_mode", None) != mode
+                or getattr(self, "_context_glossary", None) != glossary
+                or getattr(self, "_context_game_rules", None) != game_rules
+            )
+            self._context_enabled = bool(enabled)
+            self._context_mode = mode
+            self._context_memory_size = memory_size
+            self._context_glossary = glossary
+            self._context_game_rules = game_rules
+            self._context_memory = deque(
+                [] if settings_changed else previous,
+                maxlen=memory_size,
+            )
+            if settings_changed:
+                self._context_signature = None
+            self._translate_cache.clear()
+
+    @staticmethod
+    def _protect_glossary(text, glossary):
+        protected = text
+        replacements = {}
+        for index, (source, target) in enumerate(
+            sorted(glossary.items(), key=lambda item: len(item[0]), reverse=True)
+        ):
+            token = f"ZXQTERM{index:03d}QXZ"
+            escaped = re.escape(source)
+            if source[0].isalnum() and source[-1].isalnum():
+                pattern = rf"(?<!\w){escaped}(?!\w)"
+            else:
+                pattern = escaped
+            protected, count = re.subn(
+                pattern, token, protected, flags=re.IGNORECASE
+            )
+            if count:
+                replacements[token] = target
+        return protected, replacements
+
+    @staticmethod
+    def _restore_glossary(text, replacements):
+        restored = text
+        for token, target in replacements.items():
+            restored = re.sub(re.escape(token), target, restored, flags=re.IGNORECASE)
+        return restored
+
+    @staticmethod
+    def _split_game_dialogue(text):
+        match = re.match(r"^([^:\n]{1,40}):\s+(.+)$", text.strip())
+        if not match:
+            return None, text
+        speaker = match.group(1).strip()
+        if not re.search(r"[^\W\d_]", speaker, flags=re.UNICODE):
+            return None, text
+        return speaker, match.group(2).strip()
+
+    def _translate_with_optional_context(self, text, normalized, src, tgt):
+        with self._context_lock:
+            enabled = self._context_enabled
+            mode = self._context_mode
+            history = list(self._context_memory)
+            glossary = dict(self._context_glossary)
+            game_rules = dict(self._context_game_rules)
+            signature = (src, tgt, mode)
+            if self._context_signature != signature:
+                self._context_memory.clear()
+                history = []
+                self._context_signature = signature
+
+        if not enabled:
+            if normalized in self._translate_cache:
+                return self._translate_cache[normalized]
+            translated = translator.translate(text, src, tgt)
+            if translated:
+                self._translate_cache[normalized] = translated
+            return translated
+
+        speaker = None
+        dialogue_text = text
+        if mode == "game":
+            speaker, dialogue_text = self._split_game_dialogue(text)
+            if speaker:
+                listener = None
+                speaker_key = speaker.casefold()
+
+                # Highest priority: a configured character name explicitly
+                # mentioned in the current dialogue (for example "Lisa, ...").
+                configured_listeners = {
+                    rule_listener
+                    for rule_speaker, rule_listener in game_rules
+                    if rule_speaker == speaker_key and rule_listener != "*"
+                }
+                for candidate in sorted(configured_listeners, key=len, reverse=True):
+                    candidate_pattern = rf"(?<!\w){re.escape(candidate)}(?!\w)"
+                    if re.search(candidate_pattern, dialogue_text, flags=re.IGNORECASE):
+                        listener = candidate
+                        break
+
+                # Otherwise infer the listener from the most recent different
+                # speaker in the conversation history.
+                if listener is None:
+                    for previous_line in reversed(history):
+                        previous_speaker, _ = self._split_game_dialogue(previous_line)
+                        if (
+                            previous_speaker
+                            and previous_speaker.casefold() != speaker_key
+                        ):
+                            listener = previous_speaker.casefold()
+                            break
+
+                speaker_rules = game_rules.get((speaker_key, listener or ""))
+                if speaker_rules is None:
+                    speaker_rules = game_rules.get((speaker_key, "*"), {})
+                glossary.update(speaker_rules)
+
+        marker = "ZXQCURRENTSEGMENTQXZ"
+        history = [line[-350:] for line in history]
+        payload = "\n".join([*history, marker, dialogue_text])
+        if len(payload) > 4500:
+            payload = payload[-4500:]
+
+        protected_payload, replacements = self._protect_glossary(payload, glossary)
+        translated_block = translator.translate(protected_payload, src, tgt)
+        if not translated_block:
+            return ""
+
+        marker_match = re.search(marker, translated_block, flags=re.IGNORECASE)
+        if marker_match:
+            translated = translated_block[marker_match.end():].strip()
+        else:
+            translated_lines = [line.strip() for line in translated_block.splitlines() if line.strip()]
+            if len(translated_lines) > 1:
+                translated = translated_lines[-1]
+            else:
+                # If the provider removes the segment marker and all line
+                # breaks, fall back safely instead of showing the whole context.
+                protected_text, current_replacements = self._protect_glossary(
+                    dialogue_text, glossary
+                )
+                translated = translator.translate(protected_text, src, tgt)
+                replacements = current_replacements
+
+        translated = self._restore_glossary(translated or "", replacements)
+        if translated and speaker:
+            translated = f"{speaker}: {translated}"
+        if translated:
+            with self._context_lock:
+                if not self._context_enabled or self._context_signature != signature:
+                    return translated
+                if mode == "game":
+                    normalized_history = {normalize_text(line) for line in self._context_memory}
+                    if normalized not in normalized_history:
+                        self._context_memory.append(text)
+                else:
+                    self._context_memory.append(text)
+        return translated
         
     def run(self):
         global RED_REGION, reader
@@ -1254,30 +1802,22 @@ class OCRWorker(QtCore.QThread):
                 # ===== Choose OCR region (SINGLE DECISION POINT) =====
                 if should_follow_mouse():
                     idle_time = time.time() - mouse_last_move_time
+                    mx, my = mouse_pos
 
                     global mouse_idle_triggered
                     if not mouse_idle_triggered:
                         mouse_idle_triggered = True
                         print(f"[MOUSE] FOLLOW ON (idle {idle_time:.1f}s)")
+                    half_width = MOUSE_OCR_WIDTH // 2
+                    half_height = MOUSE_OCR_HEIGHT // 2
 
-                        mx, my = mouse_pos
-
-                        QtCore.QTimer.singleShot(
-                            0,
-                            lambda x=mx, y=my: mouse_ocr_preview.show_at(
-                                x, y, MOUSE_OCR_SIZE
-                            )
-                        )
-                    half = MOUSE_OCR_SIZE // 2
-
-                    x1 = max(0, mx - half)
-                    y1 = max(0, my - half)
-                    x2 = mx + half
-                    y2 = my + half
+                    x1 = max(0, mx - half_width)
+                    y1 = max(0, my - half_height)
+                    x2 = mx + half_width
+                    y2 = my + half_height
                 else:
                     mouse_idle_triggered = False
                     x1, y1, x2, y2 = RED_REGION
-                    QtCore.QTimer.singleShot(0, mouse_ocr_preview.hide)
                     
                 if not self.running or self._stop:
                     continue
@@ -1335,16 +1875,11 @@ class OCRWorker(QtCore.QThread):
                         normalized = normalize_text(cleaned)
 
                         # ===== TRANSLATE (SAFE) =====
-                        translated = None
-
-                        if normalized in self._translate_cache:
-                            translated = self._translate_cache[normalized]
-                        else:
-                            src = cfg.get("translate_source", "auto")
-                            tgt = cfg.get("translate_target", "vi")
-                            translated = translator.translate(cleaned, src, tgt)
-                            if translated:
-                                self._translate_cache[normalized] = translated
+                        src = cfg.get("translate_source", "auto")
+                        tgt = cfg.get("translate_target", "vi")
+                        translated = self._translate_with_optional_context(
+                            cleaned, normalized, src, tgt
+                        )
 
                         # ===== EMIT SUBTITLE =====
                         if translated:
@@ -1383,6 +1918,8 @@ class OCRWorker(QtCore.QThread):
             self._last_text = ""
             self._last_mouse_text = ""
             self._blank_emitted = True
+            with self._context_lock:
+                self._context_memory.clear()
 
             QtCore.QTimer.singleShot(0, mouse_ocr_preview.hide)
 
@@ -1444,7 +1981,9 @@ def qt_keyevent_to_hotkey(event: QtGui.QKeyEvent) -> str:
 class SettingsPanel(QtWidgets.QWidget):
     # ===== Window Dragging =====
     _drag_active = False
+    _drag_candidate = False
     _drag_pos = None
+    _drag_press_pos = None
     # ===== Signals =====    
     settings_changed = QtCore.pyqtSignal(dict)
     engine_switch_result = QtCore.pyqtSignal(bool, str)
@@ -1457,7 +1996,7 @@ class SettingsPanel(QtWidgets.QWidget):
 
     # ===== Rollback Snapshot =====
     def rollback_settings(self):
-        global cfg, SETTINGS_SNAPSHOT
+        global cfg, SETTINGS_SNAPSHOT, worker
 
         if not SETTINGS_SNAPSHOT:
             return
@@ -1487,6 +2026,15 @@ class SettingsPanel(QtWidgets.QWidget):
 
         # 🔁 Restore visual settings
         self.overlay.update_settings(cfg["settings"])
+        context_settings = cfg.get("settings", {})
+        if worker is not None:
+            worker.configure_context(
+                context_settings.get("context_enabled", False),
+                context_settings.get("context_mode", "video"),
+                context_settings.get("context_memory_size", 10),
+                context_settings.get("context_dictionary", ""),
+                context_settings.get("context_game_rules", ""),
+            )
 
     # ---------- Helper ----------
     def section(self, title):
@@ -1582,13 +2130,17 @@ class SettingsPanel(QtWidgets.QWidget):
     # ---------- INIT ----------
     def __init__(self, overlay, editor, parent=None):
         super().__init__(parent)
+        self._drag_active = False
+        self._drag_candidate = False
+        self._drag_pos = None
+        self._drag_press_pos = None
         self.setWindowFlags(
             QtCore.Qt.Tool |
             QtCore.Qt.FramelessWindowHint |     
             QtCore.Qt.WindowStaysOnTopHint
         )
 
-        self.setWindowTitle("GlorSub Settings")
+        self.setWindowTitle("GloSub Settings")
         # ===== CUSTOM TITLE BAR =====
         title_bar = QtWidgets.QHBoxLayout()
         title_bar.setContentsMargins(4, 4, 4, 4)
@@ -1637,6 +2189,105 @@ class SettingsPanel(QtWidgets.QWidget):
         self.mouse_ocr_cb.setChecked(
             cfg.get("settings", {}).get("mouse_ocr_enabled", False)
         )
+        self.mouse_ocr_width_input = QtWidgets.QSpinBox()
+        self.mouse_ocr_width_input.setRange(100, 1600)
+        self.mouse_ocr_width_input.setSingleStep(50)
+        self.mouse_ocr_width_input.setSuffix(" px")
+        self.mouse_ocr_width_input.setValue(
+            int(cfg.get("settings", {}).get("mouse_ocr_width", 300))
+        )
+        self.mouse_ocr_width_input.setMinimumHeight(34)
+
+        self.mouse_ocr_height_input = QtWidgets.QSpinBox()
+        self.mouse_ocr_height_input.setRange(100, 1200)
+        self.mouse_ocr_height_input.setSingleStep(50)
+        self.mouse_ocr_height_input.setSuffix(" px")
+        self.mouse_ocr_height_input.setValue(
+            int(cfg.get("settings", {}).get("mouse_ocr_height", 300))
+        )
+        self.mouse_ocr_height_input.setMinimumHeight(34)
+        # ===== VOICE =====
+        voice_settings = cfg.get("settings", {})
+        self.voice_enabled_cb = QtWidgets.QCheckBox("Enable Voice")
+        self.voice_enabled_cb.setChecked(voice_settings.get("voice_enabled", False))
+
+        self.voice_language_value = QtWidgets.QLabel()
+        self.voice_language_value.setStyleSheet("color:#9cdcfe; padding:6px 2px;")
+
+        self.voice_cb = QtWidgets.QComboBox()
+        self.voice_cb.setMinimumHeight(34)
+
+        # ===== VIDEO / GAME CONTEXT =====
+        context_settings = cfg.get("settings", {})
+        self.context_enabled_cb = QtWidgets.QCheckBox("Enable Video/Game Context")
+        self.context_enabled_cb.setChecked(
+            context_settings.get("context_enabled", False)
+        )
+        self.context_enabled_cb.toggled.connect(self._update_context_controls)
+
+        self.context_mode_cb = QtWidgets.QComboBox()
+        self.context_mode_cb.addItem("Video (chronological dialogue)", "video")
+        self.context_mode_cb.addItem("Game (unique recent lines)", "game")
+        mode_index = self.context_mode_cb.findData(
+            context_settings.get("context_mode", "video")
+        )
+        self.context_mode_cb.setCurrentIndex(max(0, mode_index))
+        self.context_mode_cb.setMinimumHeight(34)
+        self.context_mode_cb.currentIndexChanged.connect(
+            self._update_context_mode_controls
+        )
+
+        self.context_memory_input = QtWidgets.QSpinBox()
+        self.context_memory_input.setRange(8, 12)
+        self.context_memory_input.setSuffix(" sentences")
+        self.context_memory_input.setValue(
+            int(context_settings.get("context_memory_size", 10))
+        )
+        self.context_memory_input.setMinimumHeight(34)
+
+        self.context_dictionary_input = QtWidgets.QPlainTextEdit()
+        self.context_dictionary_input.setPlaceholderText(
+            "One entry per line: source = preferred translation\n"
+            "Example: Cloud = Cloud\nPotion = Bình máu"
+        )
+        self.context_dictionary_input.setPlainText(
+            context_settings.get("context_dictionary", "")
+        )
+        self.context_dictionary_input.setMinimumHeight(110)
+        self.context_dictionary_input.setMaximumHeight(150)
+        self.context_dictionary_input.setStyleSheet(
+            "QPlainTextEdit { background:#2b2b2b; border:1px solid #3c3c3c; "
+            "border-radius:8px; padding:8px; }"
+        )
+
+        self.context_game_rules_label = self.section_label(
+            "Game Speaker & Relationship Rules"
+        )
+        self.context_game_rules_input = QtWidgets.QPlainTextEdit()
+        self.context_game_rules_input.setPlaceholderText(GAME_RULES_EXAMPLE)
+        self.context_game_rules_input.setPlainText(
+            context_settings.get("context_game_rules", "")
+        )
+        self.context_game_rules_input.setMinimumHeight(140)
+        self.context_game_rules_input.setMaximumHeight(190)
+        self.context_game_rules_input.setStyleSheet(
+            "QPlainTextEdit { background:#2b2b2b; border:1px solid #3c3c3c; "
+            "border-radius:8px; padding:8px; }"
+        )
+        self.context_game_rules_help = QtWidgets.QLabel(
+            "Priority: mentioned name > previous speaker > general speaker rule"
+        )
+        self.context_game_rules_help.setStyleSheet(
+            "color:#8f8f8f; font-size:11px;"
+        )
+        self.context_game_example_btn = QtWidgets.QPushButton(
+            "Insert Example Rules"
+        )
+        self.context_game_example_btn.setToolTip(GAME_RULES_EXAMPLE)
+        self.context_game_example_btn.clicked.connect(
+            self._insert_game_rules_example
+        )
+
         self.mouse_hold_key_input = QtWidgets.QLineEdit()
         self.mouse_hold_key_input.setReadOnly(True)
         self.mouse_hold_key_input.setPlaceholderText("Press & hold a key (default: Ctrl)")
@@ -1759,25 +2410,15 @@ class SettingsPanel(QtWidgets.QWidget):
 
         # theme chooser removed
 
-        self.ocr_lang_cb = QtWidgets.QComboBox()
-        self.ocr_lang_cb.addItems(["en", "ja", "ko", "ch_sim"])
-        self.ocr_lang_cb.setCurrentText(cfg.get("ocr_lang", "en"))
-        self.ocr_lang_cb.setMinimumHeight(34)
-        self.ocr_lang_cb.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+        self.input_lang_cb = QtWidgets.QComboBox()
+        for ocr_code, label in INPUT_LANGUAGE_LABELS.items():
+            self.input_lang_cb.addItem(label, ocr_code)
 
-        self.trans_src_cb = QtWidgets.QComboBox()
-
-        for code, name in TRANSLATE_LANGUAGES.items():
-            self.trans_src_cb.addItem(name, code)
-
-        current_src = cfg.get("translate_source", "auto")
-        for i in range(self.trans_src_cb.count()):
-            if self.trans_src_cb.itemData(i) == current_src:
-                self.trans_src_cb.setCurrentIndex(i)
-                break
-
-        self.trans_src_cb.setMinimumHeight(34)
-        self.trans_src_cb.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+        current_input_language = cfg.get("ocr_lang", "en")
+        input_index = self.input_lang_cb.findData(current_input_language)
+        self.input_lang_cb.setCurrentIndex(max(0, input_index))
+        self.input_lang_cb.setMinimumHeight(34)
+        self.input_lang_cb.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
 
         self.trans_tgt_cb = QtWidgets.QComboBox()
         # ===== Translator Engine (ONLY GOOGLE FOR NOW) =====
@@ -1801,6 +2442,10 @@ class SettingsPanel(QtWidgets.QWidget):
 
         self.trans_tgt_cb.setMinimumHeight(34)
         self.trans_tgt_cb.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+        self.trans_tgt_cb.currentIndexChanged.connect(self._sync_voice_to_translate_target)
+        self._sync_voice_to_translate_target(
+            saved_voice=voice_settings.get("voice", "vi-VN-HoaiMyNeural")
+        )
 
         # style chooser
         self.style_cb = QtWidgets.QComboBox()
@@ -1940,10 +2585,8 @@ class SettingsPanel(QtWidgets.QWidget):
             QtWidgets.QSizePolicy.Expanding,
             QtWidgets.QSizePolicy.Maximum
         )
-        lang.addWidget(self.section_label("OCR Language"))
-        lang.addWidget(self.ocr_lang_cb)
-        lang.addWidget(self.section_label("Translate From"))
-        lang.addWidget(self.trans_src_cb)
+        lang.addWidget(self.section_label("Input Language (OCR + Translate From)"))
+        lang.addWidget(self.input_lang_cb)
 
         lang.addWidget(self.section_label("Translate To"))
         lang.addWidget(self.trans_tgt_cb)
@@ -1965,6 +2608,15 @@ class SettingsPanel(QtWidgets.QWidget):
         tools_box, tools = self.section("🛠 Tools")
         tools.addWidget(self.run_startup_cb)
         tools.addWidget(self.mouse_ocr_cb)
+        tools.addWidget(self.section_label("Mouse OCR Area Width"))
+        tools.addWidget(self.mouse_ocr_width_input)
+        tools.addWidget(self.section_label("Mouse OCR Area Height"))
+        tools.addWidget(self.mouse_ocr_height_input)
+        tools.addWidget(self.voice_enabled_cb)
+        tools.addWidget(self.section_label("Voice Language (follows Translate To)"))
+        tools.addWidget(self.voice_language_value)
+        tools.addWidget(self.section_label("Voice"))
+        tools.addWidget(self.voice_cb)
         tools.addWidget(self.section_label("Mouse OCR Hold Key"))
         tools.addWidget(self.mouse_hold_key_input)
         tools.addWidget(self.edit_btn)
@@ -1974,36 +2626,37 @@ class SettingsPanel(QtWidgets.QWidget):
         tools.addWidget(self.section_label("Toggle Settings Panel Hotkey"))
         tools.addWidget(self.settings_hotkey_input)
 
+        # ===== VIDEO / GAME CONTEXT =====
+        context_box, context_layout = self.section("🧠 Video / Game Context")
+        context_layout.addWidget(self.context_enabled_cb)
+        context_layout.addWidget(self.section_label("Context Mode"))
+        context_layout.addWidget(self.context_mode_cb)
+        context_layout.addWidget(self.section_label("Memory Length"))
+        context_layout.addWidget(self.context_memory_input)
+        context_layout.addWidget(
+            self.section_label("Character & Terminology Dictionary")
+        )
+        context_layout.addWidget(self.context_dictionary_input)
+        dictionary_help = QtWidgets.QLabel(
+            "Format: source = preferred translation (one entry per line)"
+        )
+        dictionary_help.setStyleSheet("color:#8f8f8f; font-size:11px;")
+        context_layout.addWidget(dictionary_help)
+        context_layout.addWidget(self.context_game_rules_label)
+        context_layout.addWidget(self.context_game_rules_input)
+        context_layout.addWidget(self.context_game_rules_help)
+        context_layout.addWidget(self.context_game_example_btn)
+        content_layout.addLayout(context_box)
+        self._update_context_controls(self.context_enabled_cb.isChecked())
+
         # ===== SPACER =====
 
         # ===== ABOUT =====
         about_box, about = self.section("About")
         about_text = QtWidgets.QLabel()
         about_text.setText(
-            '''
-            <div style="
-                color:#d4d4d4;
-                font-size:12px;
-                line-height:1.6;
-            ">
-                <b style="color:#ffffff;">App Version:</b> 1.0.0<br/>
-                <b style="color:#ffffff;">Copyright:</b> © Glorgames<br/>
-                <b style="color:#ffffff;">Contact:</b>
-                <a href="mailto:Support@glorgames.com"
-                style="color:#4fc1ff; text-decoration:none;">
-                Support@glorgames.com
-                </a><br/>
-                <b style="color:#ffffff;">Policy:</b>
-                <a href="https://glorgames.com" target="_blank"
-                style="color:#4fc1ff; text-decoration:none;">
-                glorgames.com
-                </a>
-            </div>
-            '''
+            "Create by GlorSub Community.<br/><b>App Version:</b> 1.0.0"
         )
-
-        about_text.setOpenExternalLinks(True)
-        about_text.setWordWrap(True)
         about.addWidget(about_text)
         content_layout.addLayout(about_box)
 
@@ -2041,8 +2694,92 @@ class SettingsPanel(QtWidgets.QWidget):
         btn_row.addWidget(apply_btn)
         btn_row.addWidget(save_btn)
         root_layout.addLayout(btn_row)
+        self._install_drag_surfaces()
 
     # ---------- LOGIC ----------
+    def _update_context_controls(self, enabled):
+        self.context_mode_cb.setEnabled(enabled)
+        self.context_memory_input.setEnabled(enabled)
+        self.context_dictionary_input.setEnabled(enabled)
+        self._update_context_mode_controls()
+
+    def _update_context_mode_controls(self, _index=None):
+        game_mode = (
+            self.context_enabled_cb.isChecked()
+            and self.context_mode_cb.currentData() == "game"
+        )
+        self.context_game_rules_label.setVisible(game_mode)
+        self.context_game_rules_input.setVisible(game_mode)
+        self.context_game_rules_input.setEnabled(game_mode)
+        self.context_game_rules_help.setVisible(game_mode)
+        self.context_game_example_btn.setVisible(game_mode)
+        self.context_game_example_btn.setEnabled(game_mode)
+
+    def _insert_game_rules_example(self):
+        current = self.context_game_rules_input.toPlainText().strip()
+        if not current:
+            self.context_game_rules_input.setPlainText(GAME_RULES_EXAMPLE)
+            return
+        if GAME_RULES_EXAMPLE not in current:
+            self.context_game_rules_input.appendPlainText(
+                "\n\n# Example rules\n" + GAME_RULES_EXAMPLE
+            )
+
+    def _install_drag_surfaces(self):
+        """Allow dragging from non-interactive areas across the settings UI."""
+        interactive_types = (
+            QtWidgets.QAbstractButton,
+            QtWidgets.QLineEdit,
+            QtWidgets.QComboBox,
+            QtWidgets.QAbstractSpinBox,
+            QtWidgets.QAbstractSlider,
+            QtWidgets.QAbstractItemView,
+            QtWidgets.QPlainTextEdit,
+            QtWidgets.QTextEdit,
+        )
+
+        surfaces = [self, *self.findChildren(QtWidgets.QWidget)]
+        for widget in surfaces:
+            current = widget
+            belongs_to_interactive_control = False
+            while current is not None and current is not self:
+                if isinstance(current, interactive_types):
+                    belongs_to_interactive_control = True
+                    break
+                current = current.parentWidget()
+            if belongs_to_interactive_control:
+                continue
+            if isinstance(widget, QtWidgets.QLabel) and widget.openExternalLinks():
+                continue
+            widget.setProperty("settingsDragSurface", True)
+            widget.installEventFilter(self)
+
+    def _sync_voice_to_translate_target(self, _index=None, saved_voice=None):
+        translate_target = self.trans_tgt_cb.currentData()
+        language = VOICE_LANGUAGE_BY_TRANSLATE_TARGET.get(translate_target)
+        language_info = VOICE_OPTIONS.get(language)
+        current_voice = saved_voice or self.voice_cb.currentData()
+
+        self.voice_cb.blockSignals(True)
+        self.voice_cb.clear()
+        if not language_info:
+            target_name = self.trans_tgt_cb.currentText() or "selected language"
+            self.voice_language_value.setText(f"Voice unavailable for {target_name}")
+            self.voice_cb.setEnabled(False)
+            self.voice_enabled_cb.setChecked(False)
+            self.voice_enabled_cb.setEnabled(False)
+            self.voice_cb.blockSignals(False)
+            return
+
+        self.voice_language_value.setText(f"{language_info['label']} (automatic)")
+        self.voice_cb.setEnabled(True)
+        self.voice_enabled_cb.setEnabled(True)
+        for label, voice_id in language_info["voices"]:
+            self.voice_cb.addItem(label, voice_id)
+        voice_index = self.voice_cb.findData(current_voice)
+        self.voice_cb.setCurrentIndex(max(0, voice_index))
+        self.voice_cb.blockSignals(False)
+
     def choose_color(self):
         color = QtWidgets.QColorDialog.getColor()
         if color.isValid():
@@ -2062,18 +2799,57 @@ class SettingsPanel(QtWidgets.QWidget):
             self.shadow_color_btn.setStyleSheet(f"background-color: rgb({color.red()}, {color.green()}, {color.blue()}); color: black; border-radius:8px;")
 
     def apply_settings(self, show_message=True, silent=False):
-        global cfg, translator
+        global cfg, translator, voice_speaker, worker
         global MOUSE_OCR_ENABLED, MOUSE_HOLD_KEY
+        global MOUSE_OCR_WIDTH, MOUSE_OCR_HEIGHT
 
         MOUSE_OCR_ENABLED = self.mouse_ocr_cb.isChecked()
         cfg.setdefault("settings", {})
         cfg["settings"]["mouse_ocr_enabled"] = MOUSE_OCR_ENABLED
+        MOUSE_OCR_WIDTH = self.mouse_ocr_width_input.value()
+        MOUSE_OCR_HEIGHT = self.mouse_ocr_height_input.value()
+        cfg["settings"]["mouse_ocr_width"] = MOUSE_OCR_WIDTH
+        cfg["settings"]["mouse_ocr_height"] = MOUSE_OCR_HEIGHT
 
         key_text = self.mouse_hold_key_input.text().strip()
         if key_text:
             MOUSE_HOLD_KEY = key_text.lower()
         cfg.setdefault("settings", {})
         cfg["settings"]["mouse_hold_key"] = MOUSE_HOLD_KEY
+
+        voice_language = VOICE_LANGUAGE_BY_TRANSLATE_TARGET.get(
+            self.trans_tgt_cb.currentData(), ""
+        )
+        voice = self.voice_cb.currentData() or ""
+        voice_enabled = self.voice_enabled_cb.isChecked() and bool(voice_language and voice)
+        cfg["settings"].update({
+            "voice_enabled": voice_enabled,
+            "voice_language": voice_language,
+            "voice": voice,
+        })
+        if voice_speaker is not None:
+            voice_speaker.configure(voice_enabled, voice_language, voice)
+
+        context_enabled = self.context_enabled_cb.isChecked()
+        context_mode = self.context_mode_cb.currentData() or "video"
+        context_memory_size = self.context_memory_input.value()
+        context_dictionary = self.context_dictionary_input.toPlainText().strip()
+        context_game_rules = self.context_game_rules_input.toPlainText().strip()
+        cfg["settings"].update({
+            "context_enabled": context_enabled,
+            "context_mode": context_mode,
+            "context_memory_size": context_memory_size,
+            "context_dictionary": context_dictionary,
+            "context_game_rules": context_game_rules,
+        })
+        if worker is not None:
+            worker.configure_context(
+                context_enabled,
+                context_mode,
+                context_memory_size,
+                context_dictionary,
+                context_game_rules,
+            )
 
             
         self.settings["font_size"] = self.font_size_input.value()
@@ -2131,8 +2907,8 @@ class SettingsPanel(QtWidgets.QWidget):
             "outline_color": self.settings["outline_color"],
         })
 
-        new_ocr = self.ocr_lang_cb.currentText()
-        new_src = self.trans_src_cb.currentData()
+        new_ocr = self.input_lang_cb.currentData() or "en"
+        new_src = OCR_TO_TRANSLATE_LANGUAGE.get(new_ocr, "en")
         new_tgt = self.trans_tgt_cb.currentData()
 
         cfg["translate_source"] = new_src
@@ -2188,6 +2964,7 @@ class SettingsPanel(QtWidgets.QWidget):
             )
     def save_and_close(self):
         global SETTINGS_SNAPSHOT
+        self.apply_settings(show_message=False, silent=True)
         save_config(cfg)
         SETTINGS_SNAPSHOT = None
         self.hide()
@@ -2276,23 +3053,37 @@ class SettingsPanel(QtWidgets.QWidget):
             ):
                 return True
 
-        # ===== WINDOW DRAGGING (Title Bar) =====
-        if isinstance(obj, QtWidgets.QLabel) and obj.text().startswith("⚙"):
+        # ===== WINDOW DRAGGING (all non-interactive menu surfaces) =====
+        if bool(obj.property("settingsDragSurface")):
             if event.type() == QtCore.QEvent.MouseButtonPress:
                 if event.button() == QtCore.Qt.LeftButton:
-                    self._drag_active = True
+                    self._drag_candidate = True
+                    self._drag_active = False
+                    self._drag_press_pos = event.globalPos()
                     self._drag_pos = event.globalPos() - self.frameGeometry().topLeft()
-                    return True
+                    return False
 
             elif event.type() == QtCore.QEvent.MouseMove:
-                if self._drag_active and self._drag_pos:
+                if self._drag_candidate and self._drag_pos:
+                    if not (event.buttons() & QtCore.Qt.LeftButton):
+                        self._drag_candidate = False
+                        self._drag_active = False
+                        return False
+                    if not self._drag_active:
+                        distance = (event.globalPos() - self._drag_press_pos).manhattanLength()
+                        if distance < QtWidgets.QApplication.startDragDistance():
+                            return False
+                        self._drag_active = True
                     self.move(event.globalPos() - self._drag_pos)
                     return True
 
             elif event.type() == QtCore.QEvent.MouseButtonRelease:
+                was_dragging = self._drag_active
+                self._drag_candidate = False
                 self._drag_active = False
                 self._drag_pos = None
-                return True
+                self._drag_press_pos = None
+                return was_dragging
 
         return super().eventFilter(obj, event)
 # ====================== SETTINGS TOGGLE (HOTKEY) ======================
@@ -2321,6 +3112,7 @@ class SystemTray(QtWidgets.QSystemTrayIcon):
         icon = QtGui.QIcon(icon_path) if os.path.exists(icon_path) else QtGui.QIcon()
 
         super().__init__(icon, parent)
+        self.setToolTip("GloSub")
 
         self.overlay = overlay
         self.settings_panel = settings_panel
@@ -2394,6 +3186,7 @@ def main():
         translator = _FallbackTranslator()
 
     app = QtWidgets.QApplication(sys.argv)
+    app.setApplicationName("GloSub")
     esc_filter = GlobalEscFilter()
     app.installEventFilter(esc_filter)
 
@@ -2470,6 +3263,14 @@ def main():
     worker = OCRWorker(CAPTURE_FPS)
     worker.subtitle_ready.connect(overlay.update_text)
     worker.subtitle_move.connect(overlay.move_near_mouse)
+    global voice_speaker
+    voice_settings = cfg.get("settings", {})
+    voice_speaker = VoiceSpeaker(
+        enabled=voice_settings.get("voice_enabled", False),
+        language=voice_settings.get("voice_language", "vi-VN"),
+        voice=voice_settings.get("voice", "vi-VN-HoaiMyNeural"),
+    )
+    worker.subtitle_ready.connect(voice_speaker.speak)
     worker.start()   # ✅ START DUY NHẤT 1 LẦN
     
     # ===== SETTINGS PANEL =====
@@ -2570,6 +3371,10 @@ def main():
         try:
             worker.stop()
             worker.wait(1500)
+        except Exception:
+            pass
+        try:
+            voice_speaker.stop()
         except Exception:
             pass
 

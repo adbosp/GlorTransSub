@@ -1,4 +1,7 @@
-GEMINI_API_KEY = "AIzaSyD-6imSU3aJ6RyebzNScBCrQLxt2VkTX1w"
+import os
+
+
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 # Optional: path to tesseract executable. If tesseract is on PATH, set to None
 TESSERACT_CMD = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
