@@ -1,0 +1,6 @@
+# Install the normal dependencies first, then replace the CPU PyTorch wheels
+# with the CUDA 13.0 builds for NVIDIA GPUs.
+-r requirements.txt
+--extra-index-url https://download.pytorch.org/whl/cu130
+torch==2.13.0+cu130
+torchvision==0.28.0+cu130

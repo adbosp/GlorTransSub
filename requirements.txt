@@ -4,9 +4,11 @@
 numpy==2.4.6
 pillow==12.3.0
 requests==2.34.2
+boto3==1.43.50
+google-auth==2.56.0
 
 # =========================
-# PyTorch (CPU ONLY - stable)
+# PyTorch CPU fallback (use requirements-gpu.txt on NVIDIA CUDA PCs)
 # =========================
 torch==2.13.0
 torchvision==0.28.0

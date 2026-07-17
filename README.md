@@ -19,6 +19,9 @@ This repository represents an early-stage prototype focused on validating the co
 ## Features
 
 - Background application with system tray integration  
+- Multi-monitor OCR, subtitle overlays, and Mouse Subtitle support
+- Mouse-only mode with an independent Main Subtitle switch
+- F8 pauses all OCR, translation API calls, and pending Voice playback
 - Mouse and screen interaction handling  
 - Early-stage text processing pipeline  
 - Modular and extensible architecture  
@@ -167,6 +170,38 @@ python -m pip install --upgrade pip
 
 Running the Application
 python main.py
+
+AI Translation
+
+In Settings > General > Language & Translation, GloSub supports Google
+Translate plus ChatGPT (OpenAI), Gemini, DeepSeek, Claude, and xAI (Grok).
+Choose a provider, enter its API key, select or type a model, then use
+Test AI Connection before saving. API keys saved in subtitle_config.json are
+encrypted for the current Windows user with DPAPI; they are not stored as
+plain text. If an AI request fails during translation, GloSub automatically
+falls back to Google Translate for that subtitle.
+
+AI Text-to-Speech
+
+The Voice card supports Microsoft Edge TTS, OpenAI TTS, ElevenLabs,
+Google Cloud Text-to-Speech, Microsoft Azure Speech, and Amazon Polly.
+Each provider has its own editable model/engine, voice ID, region, and
+credential fields. Use Test TTS Connection before enabling Voice. Secret
+values (API keys, service-account JSON, and AWS credentials) are protected
+with Windows DPAPI. Smart, Queue, Latest, audio caching, and language sync
+continue to work with every provider.
+
+
+Automatic GPU Acceleration
+
+Before importing PyTorch, GloSub checks the computer automatically. On a
+Windows PC with a supported NVIDIA GPU, it installs the pinned CUDA runtime
+from requirements-gpu.txt and then opens the app. A small one-time progress
+window is shown; the user does not need to run a pip command.
+
+Computers without NVIDIA CUDA skip the GPU download and continue with CPU.
+If installation fails while offline, GloSub continues on CPU, writes details
+to %LOCALAPPDATA%\GloSub\gpu-setup.log, and retries later.
 
 
 The application runs in the background and may display a system tray icon depending on the current implementation.
