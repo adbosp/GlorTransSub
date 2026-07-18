@@ -2,6 +2,7 @@ import sys
 import os
 import ctypes
 import json
+import shutil
 import time
 import hashlib
 import math
@@ -10,15 +11,16 @@ import queue
 import tempfile
 from collections import deque
 
+if sys.stdout is None:
+    sys.stdout = open(os.devnull, "w", encoding="utf-8")
+if sys.stderr is None:
+    sys.stderr = open(os.devnull, "w", encoding="utf-8")
+
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
     sys.stderr.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
 except Exception:
     pass
-from pynput import mouse
-import re
-import numpy as np
-
 # ====================== SINGLE INSTANCE ======================
 _single_instance_handle = None
 
@@ -74,6 +76,9 @@ from gpu_bootstrap import ensure_gpu_runtime
 if __name__ == "__main__":
     ensure_gpu_runtime()
 import torch
+from pynput import mouse
+import re
+import numpy as np
 from PyQt5 import QtWidgets, QtGui, QtCore
 from PIL import ImageGrab
 from smart_translator import AI_PROVIDERS, SmartTranslator, test_provider
@@ -91,6 +96,30 @@ except Exception:
 # ====================== SYSTEM LANGUAGE ======================
 import locale
 
+
+def resource_path(relative_path):
+    """Return a bundled resource path in source and PyInstaller builds."""
+    base_dir = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base_dir, relative_path)
+
+
+def config_path():
+    """Keep release configuration in a writable per-user location."""
+    if getattr(sys, "frozen", False):
+        config_dir = os.path.join(
+            os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "GloSub"
+        )
+        os.makedirs(config_dir, exist_ok=True)
+        target = os.path.join(config_dir, "subtitle_config.json")
+        bundled_default = resource_path("subtitle_config.json")
+        if not os.path.exists(target) and os.path.isfile(bundled_default):
+            try:
+                shutil.copyfile(bundled_default, target)
+            except OSError:
+                pass
+        return target
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "subtitle_config.json")
+
 def get_system_language():
     try:
         lang, _ = locale.getdefaultlocale()
@@ -105,7 +134,7 @@ def get_default_translate_target():
 # ====================== APP THEME ======================
 def build_app_stylesheet(theme="dark"):
     light = theme == "light"
-    asset_dir = os.path.join(os.path.dirname(__file__), "assets").replace("\\", "/")
+    asset_dir = resource_path("assets").replace("\\", "/")
     arrow_down = f"{asset_dir}/chevron-down.svg"
     arrow_up = f"{asset_dir}/chevron-up.svg"
     colors = {
@@ -536,7 +565,7 @@ def tr(key: str) -> str:
     
 # ====== CONFIG & PATH ======
 CAPTURE_FPS = 3
-CONFIG_FILE = "subtitle_config.json"
+CONFIG_FILE = config_path()
 APP_NAME = "GloSub"
 # default regions (left, top, right, bottom)
 DEFAULT_RED_REGION = (0, 900, 1920, 1080)
@@ -853,7 +882,7 @@ I18N = {}
 def load_i18n():
     global I18N
     try:
-        path = os.path.join(os.path.dirname(__file__), "i18n.json")
+        path = resource_path("i18n.json")
         with open(path, "r", encoding="utf-8") as f:
             I18N = json.load(f)
         print("[I18N] Loaded languages:", list(I18N.keys()))
@@ -3323,7 +3352,7 @@ class SettingsPanel(QtWidgets.QWidget):
         title_bar.addWidget(self.theme_cb)
         title_bar.addWidget(btn_close)
         # ===== Window Icon =====
-        icon_path = os.path.join(os.path.dirname(__file__), "icon.ico")
+        icon_path = resource_path("Icon.ico")
         if os.path.exists(icon_path):
             self.setWindowIcon(QtGui.QIcon(icon_path))
         # make settings panel wider to avoid cramped controls (4 columns)
@@ -4455,7 +4484,7 @@ def toggle_settings_panel():
 # ====================== SYSTEM TRAY ======================
 class SystemTray(QtWidgets.QSystemTrayIcon):
     def __init__(self, parent, overlay, settings_panel):
-        icon_path = os.path.join(os.path.dirname(__file__), "icon.ico")
+        icon_path = resource_path("Icon.ico")
         icon = QtGui.QIcon(icon_path) if os.path.exists(icon_path) else QtGui.QIcon()
 
         super().__init__(icon, parent)
@@ -4566,7 +4595,7 @@ def main():
     _mouse_listener()
 
     # ===== Application Icon (Taskbar / Alt+Tab) =====
-    icon_path = os.path.join(os.path.dirname(__file__), "icon.ico")
+    icon_path = resource_path("Icon.ico")
     if os.path.exists(icon_path):
         app.setWindowIcon(QtGui.QIcon(icon_path))
     apply_ui_theme(cfg.get("settings", {}).get("ui_theme", "dark"))

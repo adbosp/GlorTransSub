@@ -59,6 +59,20 @@ This repository represents an early-stage prototype focused on validating the co
 
 ---
 
+## Windows Release (No installation required)
+
+1. Download `GloSub-v1.0.0-Windows-x64.zip` from GitHub Releases.
+2. Extract the entire ZIP to a normal writable folder.
+3. Open `GloSub.exe`. Keep the `_internal` folder next to the EXE.
+
+Python, pip, PyTorch, EasyOCR, Voice, and API client dependencies are already
+included. OCR language models are downloaded automatically by EasyOCR the first
+time a language is used; no manual installation command is required. User
+settings and encrypted API credentials are stored under `%LOCALAPPDATA%\GloSub`.
+
+The portable folder uses a bundled CPU PyTorch runtime so it works on Windows
+PCs with or without a discrete GPU.
+
 ## Installation (Development Setup)
 
 ### Prerequisites

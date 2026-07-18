@@ -159,6 +159,11 @@ def _install_with_progress():
 
 def ensure_gpu_runtime():
     """Install CUDA wheels once when NVIDIA hardware is present."""
+    # A frozen PyInstaller executable already contains its Python runtime and
+    # packages. Running ``GloSub.exe -m pip`` cannot modify that bundle, so the
+    # portable release uses its bundled CPU PyTorch runtime on every PC.
+    if getattr(sys, "frozen", False):
+        return False
     if os.name != "nt" or not _nvidia_gpu_available() or _torch_has_cuda_build():
         return False
     if _recent_failure():
