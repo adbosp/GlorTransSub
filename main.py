@@ -10,6 +10,7 @@ import asyncio
 import queue
 import tempfile
 from collections import deque
+from contextlib import closing
 
 if sys.stdout is None:
     sys.stdout = open(os.devnull, "w", encoding="utf-8")
@@ -1151,30 +1152,41 @@ class VoiceSpeaker:
         self._cache_dir = os.path.join(tempfile.gettempdir(), "glosub-tts-cache")
         os.makedirs(self._cache_dir, exist_ok=True)
 
-        self._synthesis_threads = [
-            threading.Thread(
-                target=self._synthesis_loop,
-                name=f"VoiceSynthesis-{index + 1}",
+        self._start_lock = threading.Lock()
+        self._synthesis_threads = []
+        self._queue_thread = None
+        self._playback_thread = None
+
+    def _ensure_started(self):
+        # Translation-only sessions should not create audio threads or open
+        # the mixer. Start once, on the first actual spoken subtitle.
+        with self._start_lock:
+            if self._synthesis_threads or self._stop_event.is_set():
+                return
+            self._synthesis_threads = [
+                threading.Thread(
+                    target=self._synthesis_loop,
+                    name=f"VoiceSynthesis-{index + 1}",
+                    daemon=True,
+                )
+                for index in range(self.SYNTHESIS_WORKERS)
+            ]
+            for synthesis_thread in self._synthesis_threads:
+                synthesis_thread.start()
+
+            self._queue_thread = threading.Thread(
+                target=self._queue_mode_loop,
+                name="VoiceQueueSynthesis",
                 daemon=True,
             )
-            for index in range(self.SYNTHESIS_WORKERS)
-        ]
-        for synthesis_thread in self._synthesis_threads:
-            synthesis_thread.start()
+            self._queue_thread.start()
 
-        self._queue_thread = threading.Thread(
-            target=self._queue_mode_loop,
-            name="VoiceQueueSynthesis",
-            daemon=True,
-        )
-        self._queue_thread.start()
-
-        self._playback_thread = threading.Thread(
-            target=self._playback_loop,
-            name="VoicePlayback",
-            daemon=True,
-        )
-        self._playback_thread.start()
+            self._playback_thread = threading.Thread(
+                target=self._playback_loop,
+                name="VoicePlayback",
+                daemon=True,
+            )
+            self._playback_thread.start()
 
     def configure(
         self, enabled, language, voice, mode="smart", provider="edge",
@@ -1199,8 +1211,10 @@ class VoiceSpeaker:
 
     def speak(self, text):
         text = (text or "").strip()
-        if not self.enabled or self._paused.is_set():
+        if not self.enabled or self._paused.is_set() or self._stop_event.is_set():
             return
+        if text:
+            self._ensure_started()
 
         if self.mode == "queue":
             if not text:
@@ -1297,8 +1311,8 @@ class VoiceSpeaker:
     @staticmethod
     def _stop_playback():
         try:
-            import pygame
-            if pygame.mixer.get_init():
+            pygame = sys.modules.get("pygame")
+            if pygame is not None and pygame.mixer.get_init():
                 pygame.mixer.music.stop()
         except Exception:
             pass
@@ -1510,8 +1524,9 @@ class VoiceSpeaker:
             self._playback_queue.put_nowait(None)
         except queue.Full:
             pass
-        self._queue_thread.join(timeout=2.0)
-        self._playback_thread.join(timeout=2.0)
+        for thread in (self._queue_thread, self._playback_thread):
+            if thread is not None:
+                thread.join(timeout=2.0)
 
 
 # ====================== CLICK-THROUGH UTIL ======================
@@ -2396,8 +2411,6 @@ class OCRWorker(QtCore.QThread):
         self._inactivity_timeout = 10.0  # seconds
         # track last processed frame hash to avoid duplicate OCR
         self._last_frame_hash = None
-        # simple cache for translations keyed by normalized text
-        self._translate_cache = {}
         # minimum delay between translation calls (seconds)
         self._translate_cooldown = 0.5
         self._last_mouse_text = ""
@@ -2440,7 +2453,6 @@ class OCRWorker(QtCore.QThread):
             )
             if settings_changed:
                 self._context_signature = None
-            self._translate_cache.clear()
 
     @staticmethod
     def _protect_glossary(text, glossary):
@@ -2493,12 +2505,8 @@ class OCRWorker(QtCore.QThread):
                 self._context_signature = signature
 
         if not enabled:
-            if normalized in self._translate_cache:
-                return self._translate_cache[normalized]
-            translated = translator.translate(text, src, tgt)
-            if translated:
-                self._translate_cache[normalized] = translated
-            return translated
+            # SmartTranslator owns the bounded, language-aware cache.
+            return translator.translate(text, src, tgt)
 
         speaker = None
         dialogue_text = text
@@ -2644,8 +2652,8 @@ class OCRWorker(QtCore.QThread):
                     # Required for monitors positioned left/above primary,
                     # whose global desktop coordinates are negative.
                     grab_options["all_screens"] = True
-                pil_img = ImageGrab.grab(**grab_options)
-                np_img = np.array(pil_img)
+                with closing(ImageGrab.grab(**grab_options)) as pil_img:
+                    np_img = np.array(pil_img)
 
                 text = ""
                 if reader is not None:
@@ -2675,13 +2683,17 @@ class OCRWorker(QtCore.QThread):
                         except Exception:
                             pass
 
-                    result = reader.readtext(img_for_ocr, detail=0)
+                    with torch.inference_mode():
+                        result = reader.readtext(img_for_ocr, detail=0)
                     text = " ".join(result)
+                    del img_for_ocr, result
                     if mouse_capture:
                         text = strip_mouse_preview_artifacts(
                             text, MOUSE_OCR_WIDTH, MOUSE_OCR_HEIGHT
                         )
 
+                # Release captured pixels before waiting on a translation API.
+                del np_img
                 now = time.time()
                 cleaned = text.strip()
                 # ❌ Nếu OCR OFF thì bỏ qua toàn bộ

@@ -3,7 +3,7 @@
 import os
 import re
 import sys
-from functools import lru_cache
+from collections import OrderedDict
 from threading import Event, Lock
 from urllib.parse import quote
 
@@ -21,7 +21,8 @@ try:
 except Exception:
     pass
 
-MAX_CACHE_SIZE = 30000
+MAX_CACHE_SIZE = 1024
+MAX_CACHE_BYTES = 4 * 1024 * 1024
 REQUEST_TIMEOUT = (8, 30)
 
 AI_PROVIDERS = {
@@ -225,6 +226,9 @@ class AIEngine:
 class SmartTranslator:
     def __init__(self, engine="google", api_key="", model=""):
         self._lock = Lock()
+        self._cache = OrderedDict()
+        self._cache_bytes = 0
+        self._revision = 0
         self._google = GoogleEngine()
         self.engine_name = "google"
         self.model = ""
@@ -251,15 +255,26 @@ class SmartTranslator:
             self.engine_name = engine
             self.model = model
             self.last_error = ""
-            self._translate_cached.cache_clear()
+            self._clear_cache_locked()
         print(f"[Translator] Active: {engine}{' / ' + model if model else ''}")
 
     # Backwards-compatible name used by older settings code.
     set_engine = configure
 
-    @lru_cache(maxsize=MAX_CACHE_SIZE)
-    def _translate_cached(self, signature, src, tgt, text):
-        return self._engine.translate(text, src, tgt)
+    def _clear_cache_locked(self):
+        self._cache.clear()
+        self._cache_bytes = 0
+        self._revision += 1
+
+    def clear_cache(self):
+        with self._lock:
+            self._clear_cache_locked()
+
+    @staticmethod
+    def _entry_size(key, result):
+        # Count Python string storage (including Unicode), not just characters.
+        return (sys.getsizeof(key) + sum(sys.getsizeof(part) for part in key)
+                + sys.getsizeof(result))
 
     def translate(self, text, src="auto", tgt="vi"):
         if self._paused.is_set():
@@ -267,22 +282,50 @@ class SmartTranslator:
         text = normalize_text(text or "")
         if len(text) < 2:
             return ""
-        signature = f"{self.engine_name}:{self.model}"
-        try:
-            result = self._translate_cached(signature, src, tgt, text)
-            if result:
+        key = (src, tgt, text)
+        with self._lock:
+            engine = self._engine
+            engine_name = self.engine_name
+            revision = self._revision
+            if key in self._cache:
+                self._cache.move_to_end(key)
                 self.last_error = ""
-                return result
-            raise RuntimeError("Empty translation result")
+                return self._cache[key]
+        error = ""
+        try:
+            result = engine.translate(text, src, tgt)
+            if not result:
+                raise RuntimeError("Empty translation result")
         except Exception as exc:
-            self.last_error = str(exc)
-            print(f"[{self.engine_name} ERROR] {exc}; falling back to Google")
-            if self.engine_name != "google" and not self._paused.is_set():
+            error = str(exc)
+            print(f"[{engine_name} ERROR] {exc}; falling back to Google")
+            result = ""
+            if engine_name != "google" and not self._paused.is_set():
                 try:
-                    return self._google.translate(text, src, tgt)
+                    result = self._google.translate(text, src, tgt)
                 except Exception as fallback_exc:
                     print(f"[Google fallback ERROR] {fallback_exc}")
-            return ""
+        with self._lock:
+            # Settings can change while an HTTP request is in flight. Never
+            # show or cache a response from the previous configuration.
+            if revision != self._revision or self._paused.is_set():
+                return ""
+            self.last_error = error
+            if result and not error:
+                size = self._entry_size(key, result)
+                if size <= MAX_CACHE_BYTES:
+                    previous = self._cache.pop(key, None)
+                    if previous is not None:
+                        self._cache_bytes -= self._entry_size(key, previous)
+                    while self._cache and (
+                        len(self._cache) >= MAX_CACHE_SIZE
+                        or self._cache_bytes + size > MAX_CACHE_BYTES
+                    ):
+                        old_key, old_result = self._cache.popitem(last=False)
+                        self._cache_bytes -= self._entry_size(old_key, old_result)
+                    self._cache[key] = result
+                    self._cache_bytes += size
+            return result
 
 
 def test_provider(provider, api_key, model=""):
@@ -297,5 +340,5 @@ def test_provider(provider, api_key, model=""):
 
 def clear_translation_cache(translator=None):
     if translator is not None:
-        translator._translate_cached.cache_clear()
+        translator.clear_cache()
     print("[CACHE] Cleared")
