@@ -10,6 +10,11 @@ name: Build Windows release
     paths:
       - '.github/workflows/windows-release.yml'
       - 'scripts/ci_run.py'
+      - 'tests/**'
+      - 'main.py'
+      - 'release_checks.py'
+      - 'GloSub.spec'
+      - 'requirements*.txt'
 
 permissions:
   contents: read
@@ -101,6 +106,22 @@ jobs:
           Compress-Archive -Path "dist/$name" -DestinationPath "dist/$name.zip" -CompressionLevel Optimal
           $hash = (Get-FileHash "dist/$name.zip" -Algorithm SHA256).Hash.ToLowerInvariant()
           "$hash  $name.zip" | Set-Content dist/SHA256SUMS.txt -Encoding ascii
+      - name: Surface build diagnostics
+        if: failure()
+        shell: pwsh
+        run: |
+          $logs = Get-ChildItem build/*.log -ErrorAction SilentlyContinue | Sort-Object LastWriteTime
+          foreach ($log in $logs) {
+            $tail = (Get-Content $log.FullName -Tail 18) -join "`n"
+            if ($tail.Length -gt 5000) { $tail = $tail.Substring($tail.Length - 5000) }
+            $escaped = $tail.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+            Write-Output "::error title=$($log.BaseName)::$escaped"
+          }
+          foreach ($report in Get-ChildItem build/*smoke.json -ErrorAction SilentlyContinue) {
+            $text = Get-Content $report.FullName -Raw
+            $escaped = $text.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+            Write-Output "::error title=$($report.Name)::$escaped"
+          }
       - name: Retain build output and validation reports
         if: always()
         uses: actions/upload-artifact@v4

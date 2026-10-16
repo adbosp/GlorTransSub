@@ -21,6 +21,8 @@ import unittest
 from unittest.mock import patch, Mock
 import weakref
 
+# Match the Windows runtime DLL order: PyTorch must load before Qt.
+import torch
 from PyQt5 import QtCore
 import smart_translator as translation
 from tts_engines import TTSEngine
