@@ -1,7 +1,8 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 from importlib.util import find_spec
-from PyInstaller.utils.hooks import collect_data_files, collect_all, collect_dynamic_libs, collect_submodules
+from pathlib import Path
+from PyInstaller.utils.hooks import collect_data_files, collect_all, collect_dynamic_libs, collect_submodules, get_package_paths
 
 
 datas = [
@@ -35,7 +36,16 @@ if find_spec("ctranslate2") is not None:
         "ctranslate2",
         filter=lambda name: not name.startswith(("ctranslate2.converters", "ctranslate2.specs")),
     )
-    for package in ("sentencepiece", "sacremoses"):
+    # PyInstaller's shared Windows DLL-probing subprocess crashes when it
+    # imports SentencePiece after the large Torch/Qt package graph. Keep its
+    # Python package as source data and collect native files explicitly, so
+    # dependency scanning can inspect the PE files without importing it.
+    _, sentencepiece_dir = get_package_paths("sentencepiece")
+    datas += collect_data_files("sentencepiece", include_py_files=True)
+    binaries += collect_dynamic_libs("sentencepiece")
+    for pattern in ("*.pyd", "*.so"):
+        binaries += [(str(path), "sentencepiece") for path in Path(sentencepiece_dir).glob(pattern)]
+    for package in ("sacremoses",):
         package_datas, package_binaries, package_imports = collect_all(package)
         datas += package_datas
         binaries += package_binaries
@@ -64,6 +74,7 @@ a = Analysis(
         "huggingface_hub",
         "ctranslate2.converters",
         "ctranslate2.specs",
+        "sentencepiece",  # shipped above as a raw package, not omitted
     ],
     noarchive=False,
     optimize=1,
@@ -99,5 +110,5 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name="GloSub-v1.1.1-Windows-x64",
+    name="GloSub-v1.1.2-Windows-x64",
 )
