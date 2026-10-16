@@ -56,6 +56,14 @@ a = Analysis(
         "IPython",
         "jupyter",
         "torch.utils.tensorboard",
+        # Offline runtime uses CTranslate2/SentencePiece; these packages are
+        # conversion-only and otherwise drag hundreds of unused models in.
+        "transformers",
+        "tokenizers",
+        "safetensors",
+        "huggingface_hub",
+        "ctranslate2.converters",
+        "ctranslate2.specs",
     ],
     noarchive=False,
     optimize=1,
