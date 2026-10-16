@@ -7,7 +7,7 @@ from PyInstaller.utils.hooks import collect_data_files, collect_all, collect_dyn
 datas = [
     ("i18n.json", "."),
     ("subtitle_config.json", "."),
-    ("Icon.ico", "."),
+    ("icon.ico", "."),
     ("requirements-gpu.txt", "."),
     ("assets", "assets"),
 ]
@@ -80,7 +80,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=["Icon.ico"],
+    icon=["icon.ico"],
     version="version_info.txt",
 )
 
@@ -91,5 +91,5 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name="GloSub-v1.0.0-Windows-x64",
+    name="GloSub-v1.1.0-Windows-x64",
 )

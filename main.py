@@ -68,13 +68,13 @@ def release_single_instance():
         _single_instance_handle = None
 
 
-if __name__ == "__main__" and not acquire_single_instance():
+if __name__ == "__main__" and "--self-test" not in sys.argv and not acquire_single_instance():
     sys.exit(0)
 
 # PyTorch must load its Windows DLLs before PyQt5. With current releases,
 # importing Qt first can make c10.dll fail with WinError 1114.
 from gpu_bootstrap import ensure_gpu_runtime
-if __name__ == "__main__":
+if __name__ == "__main__" and "--self-test" not in sys.argv:
     ensure_gpu_runtime()
 import torch
 from pynput import mouse
@@ -849,6 +849,12 @@ def init_ocr_reader(lang="en"):
         except OSError:
             pass
 
+    reader_options = {}
+    if getattr(sys, "frozen", False) and lang == "en":
+        bundled_ocr = os.path.join(os.path.dirname(sys.executable), "models", "easyocr")
+        if os.path.isdir(bundled_ocr):
+            reader_options["model_storage_directory"] = bundled_ocr
+
     use_gpu = bool(torch.cuda.is_available())
     if use_gpu:
         gpu_name = torch.cuda.get_device_name(0)
@@ -857,7 +863,7 @@ def init_ocr_reader(lang="en"):
         try:
             # Catch driver/runtime problems before loading the larger OCR model.
             torch.empty(1, device="cuda")
-            new_reader = easyocr.Reader([lang], gpu=True, verbose=False)
+            new_reader = easyocr.Reader([lang], gpu=True, verbose=False, **reader_options)
         except Exception as exc:
             print(f"[OCR] GPU failed, falling back to CPU: {exc}")
             OCR_DEVICE_STATUS = "CPU · GPU fallback"
@@ -865,14 +871,14 @@ def init_ocr_reader(lang="en"):
                 torch.cuda.empty_cache()
             except Exception:
                 pass
-            new_reader = easyocr.Reader([lang], gpu=False, verbose=False)
+            new_reader = easyocr.Reader([lang], gpu=False, verbose=False, **reader_options)
     else:
         reason = "CUDA runtime unavailable"
         if torch.version.cuda is None:
             reason = "CPU PyTorch / no CUDA"
         OCR_DEVICE_STATUS = f"CPU · {reason}"
         print(f"[OCR] Auto device: {OCR_DEVICE_STATUS}")
-        new_reader = easyocr.Reader([lang], gpu=False, verbose=False)
+        new_reader = easyocr.Reader([lang], gpu=False, verbose=False, **reader_options)
 
     reader = new_reader
     reader_language = lang
@@ -975,6 +981,11 @@ if cfg.get("translate_target") in (None, "auto"):
     cfg["translate_target"] = get_default_translate_target()
 if "translate_engine" not in cfg:
     cfg["translate_engine"] = "google"
+if getattr(sys, "frozen", False):
+    bundled_models = os.path.join(os.path.dirname(sys.executable), "models")
+    bundled_opus = os.path.join(bundled_models, "opus-en-vi")
+    if not cfg.get("opus_mt_model_dir") and os.path.isfile(os.path.join(bundled_opus, "glosub-opus.json")):
+        cfg["opus_mt_model_dir"] = bundled_opus
 if not isinstance(cfg.get("ai_api_keys"), dict):
     cfg["ai_api_keys"] = {}
 if not isinstance(cfg.get("ai_models"), dict):
@@ -4882,4 +4893,7 @@ def main():
     sys.exit(app.exec_())
 
 if __name__ == "__main__":
+    if "--self-test" in sys.argv:
+        from release_checks import main as release_self_test
+        sys.exit(release_self_test([arg for arg in sys.argv[1:] if arg != "--self-test"]))
     main()

@@ -63,7 +63,7 @@ This repository represents an early-stage prototype focused on validating the co
 
 ## Windows Release (No installation required)
 
-1. Download `GloSub-v1.0.0-Windows-x64.zip` from GitHub Releases.
+1. Download `GloSub-v1.1.0-Windows-x64.zip` from GitHub Releases.
 2. Extract the entire ZIP to a normal writable folder.
 3. Open `GloSub.exe`. Keep the `_internal` folder next to the EXE.
 

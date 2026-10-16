@@ -1,0 +1,118 @@
+name: Build Windows release
+
+"on":
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    env:
+      RELEASE_VERSION: '1.1.0'
+      PIP_DISABLE_PIP_VERSION_CHECK: '1'
+      PIP_NO_CACHE_DIR: '1'
+      HF_HUB_DISABLE_XET: '1'
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: x64
+      - name: Validate release tag
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -ne "v$env:RELEASE_VERSION") {
+            throw 'The tag must match the version in the workflow and version_info.txt.'
+          }
+      - name: Install CPU PyTorch
+        run: python -m pip install --index-url https://download.pytorch.org/whl/cpu torch==2.13.0 torchvision==0.28.0
+      - name: Install application, offline conversion and build dependencies
+        run: python -m pip install -r requirements.txt -r requirements-opus-build.txt -r requirements-build.txt
+      - name: Check dependencies
+        run: python -m pip check
+      - name: Run portable regression and conversion tests
+        env:
+          GLOSUB_TEST_CT2_CONVERSION: '1'
+        run: python -m unittest discover -s tests -v
+      - name: Prepare English to Vietnamese offline model
+        run: python prepare_opus_model.py --source en --target vi --output models/opus-en-vi
+      - name: Download and verify English OCR models
+        run: >-
+          python -c "from pathlib import Path; import easyocr;
+          Path('models/easyocr-user').mkdir(parents=True, exist_ok=True);
+          easyocr.Reader(['en'], gpu=False, verbose=False,
+          model_storage_directory='models/easyocr', user_network_directory='models/easyocr-user')"
+      - name: Check source Windows runtime and actual language models
+        run: python release_checks.py --model-root models --report build/source-smoke.json
+      - name: Build Windows application
+        run: python -m PyInstaller --noconfirm --clean GloSub.spec
+      - name: Include language models and user instructions
+        shell: pwsh
+        run: |
+          $app = "dist/GloSub-v$env:RELEASE_VERSION-Windows-x64"
+          Copy-Item models "$app/models" -Recurse
+          Copy-Item "RELEASE_NOTES_v$env:RELEASE_VERSION.md" "$app/README.txt"
+          Copy-Item LICENSE "$app/LICENSE.txt"
+      - name: Check the packaged executable
+        shell: pwsh
+        run: |
+          $exe = (Resolve-Path "dist/GloSub-v$env:RELEASE_VERSION-Windows-x64/GloSub.exe").Path
+          $report = Join-Path $env:GITHUB_WORKSPACE 'build/packaged-smoke.json'
+          $process = Start-Process -FilePath $exe -ArgumentList @('--self-test', '--report', "`"$report`"") -PassThru
+          if (-not $process.WaitForExit(240000)) {
+            $process.Kill()
+            throw 'Packaged executable self-test timed out.'
+          }
+          if ($process.ExitCode -ne 0 -or -not (Test-Path $report)) {
+            throw "Packaged executable self-test failed with exit code $($process.ExitCode)."
+          }
+          $result = Get-Content $report -Raw | ConvertFrom-Json
+          if ($result.status -ne 'passed' -or -not $result.frozen) {
+            Get-Content $report
+            throw 'The actual frozen executable did not pass its checks.'
+          }
+          Get-Content $report
+      - name: Create ZIP and SHA-256 checksum
+        shell: pwsh
+        run: |
+          $name = "GloSub-v$env:RELEASE_VERSION-Windows-x64"
+          Compress-Archive -Path "dist/$name" -DestinationPath "dist/$name.zip" -CompressionLevel Optimal
+          $hash = (Get-FileHash "dist/$name.zip" -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $name.zip" | Set-Content dist/SHA256SUMS.txt -Encoding ascii
+      - name: Retain build output and validation reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-release-${{ env.RELEASE_VERSION }}
+          if-no-files-found: warn
+          path: |
+            dist/*.zip
+            dist/SHA256SUMS.txt
+            build/*smoke.json
+            build/GloSub/warn-*.txt
+      - name: Publish validated GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          $zip = "dist/GloSub-v$env:RELEASE_VERSION-Windows-x64.zip"
+          gh release create $tag $zip dist/SHA256SUMS.txt build/packaged-smoke.json --verify-tag --title "GloSub v$env:RELEASE_VERSION" --notes-file "RELEASE_NOTES_v$env:RELEASE_VERSION.md" --latest
+          if ($LASTEXITCODE -ne 0) { throw 'GitHub Release publication failed.' }
