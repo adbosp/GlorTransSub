@@ -5,6 +5,11 @@ name: Build Windows release
   push:
     tags:
       - 'v*'
+    branches:
+      - main
+    paths:
+      - '.github/workflows/windows-release.yml'
+      - 'scripts/ci_run.py'
 
 permissions:
   contents: read
@@ -23,6 +28,8 @@ jobs:
       RELEASE_VERSION: '1.1.0'
       PIP_DISABLE_PIP_VERSION_CHECK: '1'
       PIP_NO_CACHE_DIR: '1'
+      PYTHONUTF8: '1'
+      PYTHONIOENCODING: utf-8
       HF_HUB_DISABLE_XET: '1'
       QT_QPA_PLATFORM: offscreen
     steps:
@@ -40,27 +47,27 @@ jobs:
             throw 'The tag must match the version in the workflow and version_info.txt.'
           }
       - name: Install CPU PyTorch
-        run: python -m pip install --index-url https://download.pytorch.org/whl/cpu torch==2.13.0 torchvision==0.28.0
+        run: python scripts/ci_run.py cpu-pytorch -- python -m pip install --index-url https://download.pytorch.org/whl/cpu torch==2.13.0 torchvision==0.28.0
       - name: Install application, offline conversion and build dependencies
-        run: python -m pip install -r requirements.txt -r requirements-opus-build.txt -r requirements-build.txt
+        run: python scripts/ci_run.py dependencies -- python -m pip install -r requirements.txt -r requirements-opus-build.txt -r requirements-build.txt
       - name: Check dependencies
-        run: python -m pip check
+        run: python scripts/ci_run.py dependency-check -- python -m pip check
       - name: Run portable regression and conversion tests
         env:
           GLOSUB_TEST_CT2_CONVERSION: '1'
-        run: python -m unittest discover -s tests -v
+        run: python scripts/ci_run.py regression-tests -- python -m unittest discover -s tests -v
       - name: Prepare English to Vietnamese offline model
-        run: python prepare_opus_model.py --source en --target vi --output models/opus-en-vi
+        run: python scripts/ci_run.py opus-model -- python prepare_opus_model.py --source en --target vi --output models/opus-en-vi
       - name: Download and verify English OCR models
         run: >-
-          python -c "from pathlib import Path; import easyocr;
+          python scripts/ci_run.py ocr-model -- python -c "from pathlib import Path; import easyocr;
           Path('models/easyocr-user').mkdir(parents=True, exist_ok=True);
           easyocr.Reader(['en'], gpu=False, verbose=False,
           model_storage_directory='models/easyocr', user_network_directory='models/easyocr-user')"
       - name: Check source Windows runtime and actual language models
-        run: python release_checks.py --model-root models --report build/source-smoke.json
+        run: python scripts/ci_run.py source-smoke -- python release_checks.py --model-root models --report build/source-smoke.json
       - name: Build Windows application
-        run: python -m PyInstaller --noconfirm --clean GloSub.spec
+        run: python scripts/ci_run.py pyinstaller -- python -m PyInstaller --noconfirm --clean GloSub.spec
       - name: Include language models and user instructions
         shell: pwsh
         run: |
@@ -104,6 +111,7 @@ jobs:
             dist/*.zip
             dist/SHA256SUMS.txt
             build/*smoke.json
+            build/*.log
             build/GloSub/warn-*.txt
       - name: Publish validated GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
