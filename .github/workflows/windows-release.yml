@@ -5,18 +5,6 @@ name: Build Windows release
   push:
     tags:
       - 'v*'
-    branches:
-      - main
-    paths:
-      - '.github/workflows/windows-release.yml'
-      - 'scripts/ci_run.py'
-      - 'tests/**'
-      - 'main.py'
-      - 'opus_mt.py'
-      - 'prepare_opus_model.py'
-      - 'release_checks.py'
-      - 'GloSub.spec'
-      - 'requirements*.txt'
 
 permissions:
   contents: read
@@ -32,7 +20,7 @@ jobs:
     permissions:
       contents: write
     env:
-      RELEASE_VERSION: '1.1.0'
+      RELEASE_VERSION: '1.1.1'
       PIP_DISABLE_PIP_VERSION_CHECK: '1'
       PIP_NO_CACHE_DIR: '1'
       PYTHONUTF8: '1'
@@ -71,6 +59,8 @@ jobs:
           Path('models/easyocr-user').mkdir(parents=True, exist_ok=True);
           easyocr.Reader(['en'], gpu=False, verbose=False,
           model_storage_directory='models/easyocr', user_network_directory='models/easyocr-user')"
+      - name: Remove conversion-only dependencies before packaging
+        run: python scripts/ci_run.py runtime-only -- python -m pip uninstall -y transformers tokenizers safetensors huggingface-hub
       - name: Check source Windows runtime and actual language models
         run: python scripts/ci_run.py source-smoke -- python release_checks.py --model-root models --report build/source-smoke.json
       - name: Build Windows application
@@ -101,11 +91,15 @@ jobs:
             throw 'The actual frozen executable did not pass its checks.'
           }
           Get-Content $report
+          Write-Output "::notice title=packaged-self-test::Frozen Windows executable passed OCR and offline translation checks."
       - name: Create ZIP and SHA-256 checksum
         shell: pwsh
         run: |
           $name = "GloSub-v$env:RELEASE_VERSION-Windows-x64"
           Compress-Archive -Path "dist/$name" -DestinationPath "dist/$name.zip" -CompressionLevel Optimal
+          if ((Get-Item "dist/$name.zip").Length -ge 2GB) {
+            throw "ZIP exceeds the GitHub Release asset size limit."
+          }
           $hash = (Get-FileHash "dist/$name.zip" -Algorithm SHA256).Hash.ToLowerInvariant()
           "$hash  $name.zip" | Set-Content dist/SHA256SUMS.txt -Encoding ascii
       - name: Surface build diagnostics
@@ -113,7 +107,7 @@ jobs:
         shell: pwsh
         run: |
           $logs = Get-ChildItem build/*.log -ErrorAction SilentlyContinue | Sort-Object LastWriteTime
-          foreach ($log in $logs) {
+          foreach ($log in ($logs | Select-Object -Last 1)) {
             $tail = (Get-Content $log.FullName -Tail 18) -join "`n"
             if ($tail.Length -gt 5000) { $tail = $tail.Substring($tail.Length - 5000) }
             $escaped = $tail.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
@@ -145,5 +139,7 @@ jobs:
         run: |
           $tag = $env:GITHUB_REF_NAME
           $zip = "dist/GloSub-v$env:RELEASE_VERSION-Windows-x64.zip"
-          gh release create $tag $zip dist/SHA256SUMS.txt build/packaged-smoke.json --verify-tag --title "GloSub v$env:RELEASE_VERSION" --notes-file "RELEASE_NOTES_v$env:RELEASE_VERSION.md" --latest
-          if ($LASTEXITCODE -ne 0) { throw 'GitHub Release publication failed.' }
+          gh release create $tag $zip dist/SHA256SUMS.txt build/packaged-smoke.json --verify-tag --title "GloSub v$env:RELEASE_VERSION" --notes-file "RELEASE_NOTES_v$env:RELEASE_VERSION.md" --draft
+          if ($LASTEXITCODE -ne 0) { throw 'GitHub Release asset upload failed; no release was published.' }
+          gh release edit $tag --draft=false --latest
+          if ($LASTEXITCODE -ne 0) { throw 'GitHub Release publication failed; the uploaded draft is retained.' }

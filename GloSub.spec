@@ -99,5 +99,5 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name="GloSub-v1.1.0-Windows-x64",
+    name="GloSub-v1.1.1-Windows-x64",
 )
