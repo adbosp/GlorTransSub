@@ -1,0 +1,3 @@
+# Conversion only; not required by the packaged application's offline runtime.
+-r requirements-opus.txt
+transformers==4.57.6

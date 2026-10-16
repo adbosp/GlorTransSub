@@ -1013,6 +1013,9 @@ def get_ai_api_key(provider, config=None):
 def configure_translator(config=None):
     config = config or cfg
     engine = config.get("translate_engine", "google")
+    if engine == "opus_mt":
+        translator.configure("opus_mt", model=config.get("opus_mt_model_dir", ""))
+        return
     if engine not in AI_PROVIDERS:
         translator.configure("google")
         return
@@ -2504,7 +2507,9 @@ class OCRWorker(QtCore.QThread):
                 history = []
                 self._context_signature = signature
 
-        if not enabled:
+        if not enabled or translator.engine_name == "opus_mt":
+            # OPUS-MT is sentence translation, not an instruction-following
+            # LLM: do not send context markers/glossary placeholders to it.
             # SmartTranslator owns the bounded, language-aware cache.
             return translator.translate(text, src, tgt)
 
@@ -2927,6 +2932,7 @@ class SettingsPanel(QtWidgets.QWidget):
     settings_changed = QtCore.pyqtSignal(dict)
     engine_switch_result = QtCore.pyqtSignal(bool, str)
     tts_test_result = QtCore.pyqtSignal(bool, str)
+    opus_test_result = QtCore.pyqtSignal(bool, str)
     
     def _save_ai_draft(self, provider=None):
         provider = provider or getattr(self, "_active_ai_provider", None)
@@ -2943,6 +2949,8 @@ class SettingsPanel(QtWidgets.QWidget):
         enabled = engine in AI_PROVIDERS
         for widget in self._ai_widgets:
             widget.setVisible(enabled)
+        for widget in self._opus_widgets:
+            widget.setVisible(engine == "opus_mt")
         if enabled:
             details = AI_PROVIDERS[engine]
             self.ai_api_key_label.setText(f"{details['label']} API Key")
@@ -2956,6 +2964,43 @@ class SettingsPanel(QtWidgets.QWidget):
             )
             self.ai_model_cb.blockSignals(False)
             self.ai_status_label.clear()
+
+    def _browse_opus_model(self):
+        folder = QtWidgets.QFileDialog.getExistingDirectory(
+            self, "Choose a prepared OPUS-MT model", self.opus_model_input.text()
+        )
+        if folder:
+            self.opus_model_input.setText(folder)
+
+    def _test_opus_model(self):
+        model_dir = self.opus_model_input.text().strip()
+        src = OCR_TO_TRANSLATE_LANGUAGE.get(self.input_lang_cb.currentData(), "en")
+        tgt = self.trans_tgt_cb.currentData()
+        self.opus_test_btn.setEnabled(False)
+        self.opus_status_label.setText("Loading and testing local model...")
+
+        def run_test():
+            try:
+                from opus_mt import OpusMTEngine
+                engine = OpusMTEngine(model_dir)
+                # An actual local inference, with a probe suitable for the
+                # configured source language rather than always English.
+                probes = {"en": "Hello world!", "vi": "Xin chào!", "ja": "こんにちは", "ko": "안녕하세요",
+                          "zh-cn": "你好", "zh-tw": "你好", "fr": "Bonjour", "de": "Hallo Welt!"}
+                result = engine.translate(probes.get(src, "Hello"), src, tgt)
+                if not result:
+                    raise RuntimeError("The model returned an empty translation.")
+                self.opus_test_result.emit(True, f"Local translation: {result}")
+            except Exception as exc:
+                self.opus_test_result.emit(False, str(exc))
+
+        threading.Thread(target=run_test, name="OpusModelTest", daemon=True).start()
+
+    @QtCore.pyqtSlot(bool, str)
+    def _on_opus_test_result(self, ok, message):
+        self.opus_test_btn.setEnabled(True)
+        self.opus_status_label.setStyleSheet(f"color: {'#22c55e' if ok else '#ef4444'};")
+        self.opus_status_label.setText(message)
 
     def _toggle_api_key_visibility(self, checked):
         mode = QtWidgets.QLineEdit.Normal if checked else QtWidgets.QLineEdit.Password
@@ -3675,6 +3720,7 @@ class SettingsPanel(QtWidgets.QWidget):
         # ===== Translator Engine =====
         self.engine_cb = QtWidgets.QComboBox()
         self.engine_cb.addItem("Google Translate", "google")
+        self.engine_cb.addItem("OPUS-MT (Offline · CPU INT8)", "opus_mt")
         for provider, details in AI_PROVIDERS.items():
             self.engine_cb.addItem(details["label"], provider)
 
@@ -3708,6 +3754,25 @@ class SettingsPanel(QtWidgets.QWidget):
             self.ai_test_btn,
             self.ai_status_label,
         ]
+        self.opus_model_label = self.section_label("OPUS-MT model folder")
+        self.opus_model_input = QtWidgets.QLineEdit(cfg.get("opus_mt_model_dir", ""))
+        self.opus_model_input.setPlaceholderText("Choose a prepared model folder")
+        self.opus_model_input.setMinimumHeight(34)
+        self.opus_browse_btn = QtWidgets.QPushButton("Choose Model Folder")
+        self.opus_browse_btn.clicked.connect(self._browse_opus_model)
+        self.opus_test_btn = QtWidgets.QPushButton("Test Offline Translation")
+        self.opus_test_btn.clicked.connect(self._test_opus_model)
+        self.opus_status_label = QtWidgets.QLabel()
+        self.opus_status_label.setWordWrap(True)
+        self.opus_hint = QtWidgets.QLabel(
+            "No API key or Internet needed after model preparation. The model must match "
+            "Input Language and Translate To. Context and glossary rules apply to online engines only."
+        )
+        self.opus_hint.setWordWrap(True)
+        self._opus_widgets = [self.opus_model_label, self.opus_model_input,
+                              self.opus_browse_btn, self.opus_test_btn,
+                              self.opus_status_label, self.opus_hint]
+        self.opus_test_result.connect(self._on_opus_test_result)
         self.engine_switch_result.connect(self._on_ai_test_result)
         self.engine_cb.currentIndexChanged.connect(self._on_engine_change)
 
@@ -3793,7 +3858,7 @@ class SettingsPanel(QtWidgets.QWidget):
         lang.addWidget(self.trans_tgt_cb)
         lang.addWidget(self.section_label("Translator Engine"))
         lang.addWidget(self.engine_cb)
-        for widget in self._ai_widgets:
+        for widget in [*self._ai_widgets, *self._opus_widgets]:
             lang.addWidget(widget)
         self._on_engine_change(self.engine_cb.currentIndex())
         general_top.addLayout(lang_box, 1)
@@ -4289,6 +4354,7 @@ class SettingsPanel(QtWidgets.QWidget):
         # ===== TRANSLATOR ENGINE =====
         new_engine = self.engine_cb.itemData(self.engine_cb.currentIndex())
         cfg["translate_engine"] = new_engine
+        cfg["opus_mt_model_dir"] = self.opus_model_input.text().strip()
         self._save_ai_draft(new_engine)
         cfg["ai_models"] = dict(self._ai_model_drafts)
         protected_keys = {}
@@ -4297,7 +4363,9 @@ class SettingsPanel(QtWidgets.QWidget):
                 if key:
                     protected_keys[provider] = protect_secret(key)
             cfg["ai_api_keys"] = protected_keys
-            if new_engine == "google":
+            if new_engine == "opus_mt":
+                translator.configure("opus_mt", model=cfg["opus_mt_model_dir"])
+            elif new_engine == "google":
                 translator.configure("google")
             else:
                 translator.configure(
@@ -4306,14 +4374,19 @@ class SettingsPanel(QtWidgets.QWidget):
                     self._ai_model_drafts.get(new_engine, ""),
                 )
         except Exception as exc:
-            self._on_ai_test_result(False, str(exc))
+            if new_engine == "opus_mt":
+                self._on_opus_test_result(False, str(exc))
+            else:
+                self._on_ai_test_result(False, str(exc))
             if not silent:
                 QtWidgets.QMessageBox.warning(
                     self,
                     "AI Translator",
                     f"Could not activate the selected AI engine:\n{exc}\n\n"
-                    "Google Translate remains active.",
+                    "Please correct the model or provider settings.",
                 )
+            if new_engine == "opus_mt":
+                raise
             translator.configure("google")
 
         # --- HOTKEY: Pause OCR ---
@@ -4562,12 +4635,14 @@ def main():
         try:
             configure_translator(cfg)
         except Exception as exc:
-            print(f"[Translator] AI configuration unavailable: {exc}")
-            translator.configure("google")
+            print(f"[Translator] Configuration unavailable: {exc}")
+            if cfg.get("translate_engine") != "opus_mt":
+                translator.configure("google")
     except Exception as e:
         print("[Translator] Initialization failed:", e)
 
         class _FallbackTranslator:
+            engine_name = "unavailable"
             def translate(self, text, src, tgt):
                 return text
             def set_engine(self, *a, **k):

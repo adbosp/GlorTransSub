@@ -16,6 +16,8 @@ This repository represents an early-stage prototype focused on validating the co
 
 ---
 
+[Translation model review and offline OPUS-MT setup](docs/translation-models.md)
+
 ## Features
 
 - Background application with system tray integration  

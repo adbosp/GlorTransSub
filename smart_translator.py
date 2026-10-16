@@ -28,32 +28,32 @@ REQUEST_TIMEOUT = (8, 30)
 AI_PROVIDERS = {
     "openai": {
         "label": "ChatGPT (OpenAI)",
-        "model": "gpt-5-mini",
-        "models": ["gpt-5-mini", "gpt-5-nano", "gpt-5"],
+        "model": "gpt-5.4-mini",
+        "models": ["gpt-5.4-mini", "gpt-5.4-nano", "gpt-5-mini"],
         "env": "OPENAI_API_KEY",
     },
     "gemini": {
         "label": "Gemini",
-        "model": "gemini-3.5-flash",
-        "models": ["gemini-3.5-flash"],
+        "model": "gemini-3.8-flash",
+        "models": ["gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-3.5-flash"],
         "env": "GEMINI_API_KEY",
     },
     "deepseek": {
         "label": "DeepSeek",
-        "model": "deepseek-v4-flash",
-        "models": ["deepseek-v4-flash", "deepseek-v4-pro"],
+        "model": "deepseek-flash",
+        "models": ["deepseek-flash", "deepseek-v4-pro", "deepseek-v4-flash"],
         "env": "DEEPSEEK_API_KEY",
     },
     "claude": {
         "label": "Claude",
         "model": "claude-sonnet-5",
-        "models": ["claude-sonnet-5"],
+        "models": ["claude-sonnet-5", "claude-sonnet-5-5", "claude-haiku-5-5"],
         "env": "ANTHROPIC_API_KEY",
     },
     "xai": {
         "label": "xAI (Grok)",
         "model": "grok-4.3",
-        "models": ["grok-4.3"],
+        "models": ["grok-4.3", "grok-4.7"],
         "env": "XAI_API_KEY",
     },
 }
@@ -248,6 +248,21 @@ class SmartTranslator:
             if engine == "google":
                 selected = self._google
                 model = ""
+            elif engine == "opus_mt":
+                from opus_mt import OpusMTEngine
+                try:
+                    selected = OpusMTEngine(model)
+                except Exception as exc:
+                    # Stay offline even if the selected model is unavailable.
+                    self._engine = None
+                    self.engine_name = engine
+                    self.model = model
+                    self.last_error = str(exc)
+                    self._clear_cache_locked()
+                    raise
+                model = selected.model
+                if self.engine_name == engine and self.model == model and self._engine is not None:
+                    selected = self._engine
             else:
                 selected = AIEngine(engine, api_key, model)
                 model = selected.model
@@ -287,20 +302,24 @@ class SmartTranslator:
             engine = self._engine
             engine_name = self.engine_name
             revision = self._revision
+            configuration_error = self.last_error
             if key in self._cache:
                 self._cache.move_to_end(key)
                 self.last_error = ""
                 return self._cache[key]
         error = ""
         try:
+            if engine is None:
+                raise RuntimeError(configuration_error or "No translator configured.")
             result = engine.translate(text, src, tgt)
             if not result:
                 raise RuntimeError("Empty translation result")
         except Exception as exc:
             error = str(exc)
-            print(f"[{engine_name} ERROR] {exc}; falling back to Google")
+            fallback = engine_name not in ("google", "opus_mt")
+            print(f"[{engine_name} ERROR] {exc}" + ("; falling back to Google" if fallback else ""))
             result = ""
-            if engine_name != "google" and not self._paused.is_set():
+            if fallback and not self._paused.is_set():
                 try:
                     result = self._google.translate(text, src, tgt)
                 except Exception as fallback_exc:

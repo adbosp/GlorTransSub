@@ -1,6 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 
-from PyInstaller.utils.hooks import collect_data_files
+from importlib.util import find_spec
+from PyInstaller.utils.hooks import collect_data_files, collect_all, collect_dynamic_libs, collect_submodules
 
 
 datas = [
@@ -24,10 +25,26 @@ hiddenimports = [
     "pynput.mouse._win32",
 ]
 
+# Optional offline runtime is bundled only when installed in the build venv.
+# Converted model weights remain external, selected by the user in Settings.
+binaries = []
+if find_spec("ctranslate2") is not None:
+    datas += collect_data_files("ctranslate2")
+    binaries += collect_dynamic_libs("ctranslate2")
+    hiddenimports += collect_submodules(
+        "ctranslate2",
+        filter=lambda name: not name.startswith(("ctranslate2.converters", "ctranslate2.specs")),
+    )
+    for package in ("sentencepiece", "sacremoses"):
+        package_datas, package_binaries, package_imports = collect_all(package)
+        datas += package_datas
+        binaries += package_binaries
+        hiddenimports += package_imports
+
 a = Analysis(
     ["main.py"],
     pathex=[],
-    binaries=[],
+    binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],

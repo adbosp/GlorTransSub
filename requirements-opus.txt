@@ -1,0 +1,4 @@
+# Optional CPU INT8 runtime. Install in addition to requirements.txt.
+ctranslate2==4.8.3
+sentencepiece==0.2.2
+sacremoses==0.1.1
