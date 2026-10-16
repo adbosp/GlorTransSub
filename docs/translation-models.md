@@ -75,8 +75,9 @@ and retains one selected model. Applying the same folder reuses that model.
 Translation caching retains the existing 1,024-entry / 4 MiB string budget.
 Long inputs are chunked at 256 SentencePiece tokens; line breaks are preserved.
 Chunking can reduce quality across sentence boundaries. Language auto-detection,
-multilingual target-prefix models and automatic pivot translation are not
-implemented. Use a folder matching the selected source/target pair.
+automatic switching among multilingual target languages and pivot translation
+are not implemented. A fixed target marker such as `>>vie<<` is exported during
+preparation and prepended to every input chunk when the selected model requires it. Use a folder matching the selected source/target pair.
 
 Context-history prompts and glossary placeholders are bypassed for OPUS-MT:
 these markers require an instruction-following engine. Offline failures stay

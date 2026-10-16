@@ -12,6 +12,8 @@ name: Build Windows release
       - 'scripts/ci_run.py'
       - 'tests/**'
       - 'main.py'
+      - 'opus_mt.py'
+      - 'prepare_opus_model.py'
       - 'release_checks.py'
       - 'GloSub.spec'
       - 'requirements*.txt'

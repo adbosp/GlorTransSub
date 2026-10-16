@@ -77,6 +77,9 @@ class OpusMTEngine:
                 chunks = []
                 for offset in range(0, len(tokens), 256):
                     source = tokens[offset:offset + 256] + [self.metadata['eos_token']]
+                    prefix = self.metadata.get('source_prefix')
+                    if prefix:
+                        source.insert(0, prefix)
                     results = self._translator.translate_batch(
                         [source], beam_size=2, max_input_length=0,
                         max_decoding_length=512,

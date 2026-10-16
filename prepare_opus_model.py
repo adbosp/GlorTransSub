@@ -38,8 +38,18 @@ def prepare_model(source, target, output, model=None, revision=None):
     if config.model_type != 'marian':
         raise ValueError('Only Marian OPUS-MT models are supported.')
     tokenizer = MarianTokenizer.from_pretrained(snapshot, local_files_only=True)
-    if tokenizer.supported_language_codes:
-        raise ValueError('Choose a bilingual OPUS-MT model; multilingual target prefixes are not supported.')
+    source_prefix = ""
+    supported = tokenizer.supported_language_codes
+    if supported:
+        # Even bilingual models such as en→vi require an ISO-639-3 target
+        # marker (>>vie<<). A marker in the vocabulary does not imply that
+        # this is an unsupported multilingual model.
+        candidates = [f">>{tokenizer.target_lang}<<", f">>{target}<<"]
+        source_prefix = next((token for token in candidates if token in supported), "")
+        if not source_prefix and len(supported) == 1:
+            source_prefix = supported[0]
+        if not source_prefix:
+            raise ValueError('Cannot determine the fixed target-language token for this model.')
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='glosub-opus-', dir=output.parent) as staging:
         converted = Path(staging) / 'converted'
@@ -49,6 +59,7 @@ def prepare_model(source, target, output, model=None, revision=None):
             'format_version': 1, 'model_id': model,
             'revision': Path(snapshot).name, 'source_lang': source, 'target_lang': target,
             'normalizer_lang': tokenizer.source_lang,
+            'source_prefix': source_prefix,
             'eos_token': tokenizer.eos_token,
             'special_tokens': tokenizer.all_special_tokens,
         }

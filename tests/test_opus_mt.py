@@ -97,6 +97,22 @@ class OfflineTranslation(unittest.TestCase):
             self.assertEqual(call.args[0][0][-1], '</s>')
             self.assertEqual(call.kwargs['max_input_length'], 0)
 
+    def test_fixed_target_prefix_is_added_to_every_chunk(self):
+        engine = OpusMTEngine(self.root)
+        engine.metadata['source_prefix'] = '>>vie<<'
+        engine._normalizer = lambda text: text
+        engine._source = Mock()
+        engine._source.encode.return_value = ['word'] * 300
+        engine._target = Mock()
+        engine._target.decode.return_value = 'Xin chao'
+        engine._translator = Mock()
+        engine._translator.translate_batch.return_value = [Mock(hypotheses=[['Xin', 'chao']])]
+        self.assertEqual(engine.translate('Hello', 'en', 'vi'), 'Xin chao Xin chao')
+        self.assertEqual(engine._translator.translate_batch.call_count, 2)
+        for call in engine._translator.translate_batch.call_args_list:
+            self.assertEqual(call.args[0][0][0], '>>vie<<')
+            self.assertEqual(call.args[0][0][-1], '</s>')
+
     def test_context_markers_not_sent_to_local_model(self):
         translator = self.translator()
         translator.configure('opus_mt', model=str(self.root))
@@ -156,7 +172,7 @@ class TinyMarianConversion(unittest.TestCase):
                 shutil.copyfile(root / 'sp.model', source / name)
             processor = spm.SentencePieceProcessor(model_file=str(root / 'sp.model'))
             pieces = [processor.id_to_piece(i) for i in range(processor.get_piece_size())
-                      if processor.id_to_piece(i) != '<pad>'] + ['<pad>']
+                      if processor.id_to_piece(i) != '<pad>'] + ['>>vie<<', '<pad>']
             vocab = {piece: i for i, piece in enumerate(pieces)}
             (source / 'vocab.json').write_text(json.dumps(vocab), encoding='utf-8')
             tokenizer = MarianTokenizer(source_spm=str(source / 'source.spm'),
@@ -175,6 +191,7 @@ class TinyMarianConversion(unittest.TestCase):
             with patch('huggingface_hub.snapshot_download', return_value=str(source)):
                 prepare_model('en', 'vi', output)
             engine = OpusMTEngine(output)
+            self.assertEqual(engine.metadata['source_prefix'], '>>vie<<')
             self.assertIsInstance(engine.translate('Hello world!', 'en', 'vi'), str)
             self.assertEqual(engine._translator.device, 'cpu')
             self.assertIn(engine._translator.compute_type, ('int8', 'int8_float32'))
