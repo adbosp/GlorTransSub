@@ -34,9 +34,20 @@ if find_spec("faster_whisper") is not None:
     datas += collect_data_files("faster_whisper")  # bundled Silero VAD graph
     datas += collect_data_files("piper", includes=["espeak-ng-data/**/*"])
     binaries += collect_dynamic_libs("piper")
+    # As with SentencePiece below, ONNX Runtime works in the application but
+    # crashes PyInstaller's reused DLL-probing process after Torch/Qt imports.
+    # Ship its Python/native package explicitly without importing it in that
+    # shared scanner. The frozen EXE still exercises real ASR/VAD and synthesis.
+    _, onnx_dir = get_package_paths("onnxruntime")
+    datas += collect_data_files("onnxruntime", include_py_files=True)
+    binaries += collect_dynamic_libs("onnxruntime")
+    for native in Path(onnx_dir).rglob("*"):
+        if native.is_file() and (native.suffix in (".pyd", ".so") or ".so." in native.name):
+            target = str(Path("onnxruntime") / native.parent.relative_to(onnx_dir))
+            binaries.append((str(native), target))
     hiddenimports += ["faster_whisper", "piper", "piper.voice", "piper.config",
                       "piper.phonemize_espeak", "piper.espeakbridge", "pyaudiowpatch",
-                      "onnxruntime", "tokenizers", "huggingface_hub"]
+                      "tokenizers", "huggingface_hub", "flatbuffers", "packaging"]
 if find_spec("ctranslate2") is not None:
     datas += collect_data_files("ctranslate2")
     binaries += collect_dynamic_libs("ctranslate2")
@@ -81,6 +92,7 @@ a = Analysis(
         "ctranslate2.converters",
         "ctranslate2.specs",
         "sentencepiece",  # shipped above as a raw package, not omitted
+        "onnxruntime",  # shipped above as a raw package, not omitted
     ],
     noarchive=False,
     optimize=1,
