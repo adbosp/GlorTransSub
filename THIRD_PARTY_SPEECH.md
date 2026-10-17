@@ -3,6 +3,8 @@
 GloSub's own source remains available under its MIT license. A distribution
 including Piper also contains GPL-3.0-or-later components; their license and
 source obligations apply to those distributions. Preserve their notices.
+The Windows ZIP includes the complete Piper 1.8.0 and matching eSpeak NG source
+archives in `sources/`, including the native bridge and build instructions.
 
 - Faster-Whisper 1.2.1 (MIT): https://github.com/SYSTRAN/faster-whisper/tree/v1.2.1
 - Whisper models and test recording (MIT): https://github.com/openai/whisper

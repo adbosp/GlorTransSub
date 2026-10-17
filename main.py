@@ -2616,7 +2616,10 @@ class OCRWorker(QtCore.QThread):
             if getattr(self, 'speech_active', False):
                 # Release the OCR model from its owning thread. Audio-only
                 # sessions should not retain unused OCR weights or scan frames.
-                reader = reader_language = None
+                if reader is not None:
+                    reader = reader_language = None
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
                 self.msleep(100)
                 continue
             if not self.running:

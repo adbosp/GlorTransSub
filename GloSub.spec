@@ -32,7 +32,7 @@ hiddenimports = [
 binaries = []
 if find_spec("faster_whisper") is not None:
     datas += collect_data_files("faster_whisper")  # bundled Silero VAD graph
-    datas += collect_data_files("piper")  # espeak-ng phoneme dictionaries
+    datas += collect_data_files("piper", includes=["espeak-ng-data/**/*"])
     binaries += collect_dynamic_libs("piper")
     hiddenimports += ["faster_whisper", "piper", "piper.voice", "piper.config",
                       "piper.phonemize_espeak", "piper.espeakbridge", "pyaudiowpatch",
