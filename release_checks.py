@@ -71,6 +71,15 @@ def run_release_checks(model_root=None, report_path=None):
             'status': 'passed', 'compute_type': engine._translator.compute_type,
             'model_revision': engine.metadata['revision'], 'examples': translations,
         }
+        if (model_root / 'speech').is_dir():
+            import pyaudiowpatch
+            from speech_checks import check_speech_models
+            from speech_panel import SpeechPanel
+            report['checks']['speech_models'] = check_speech_models(model_root / 'speech')
+            panel = SpeechPanel({}, lambda *_: None, lambda: None)
+            assert panel.session is None and not panel._active
+            panel.close()
+            report['checks']['speech_controls'] = 'passed'
         report['status'] = 'passed'
     except Exception:
         report['error'] = traceback.format_exc()

@@ -141,7 +141,7 @@ class SpeechSession:
         import pyaudiowpatch as pa
         from scipy.signal import resample_poly
         rate = int(capture['defaultSampleRate'])
-        channels = min(2, int(capture['maxInputChannels']))
+        channels = int(capture['maxInputChannels'])
         size = rate // 20
         gcd = math.gcd(rate, SAMPLE_RATE)
         cutter = Utterances()
@@ -175,7 +175,7 @@ class SpeechSession:
         from scipy.signal import resample_poly
         device = audio.get_device_info_by_index(output_index)
         rate = int(device['defaultSampleRate'])
-        channels = min(2, int(device['maxOutputChannels']))
+        channels = int(device['maxOutputChannels'])
         stream = None
         self.speaking.set()
         try:
@@ -190,7 +190,9 @@ class SpeechSession:
                 gcd = math.gcd(rate, chunk.sample_rate)
                 samples = resample_poly(chunk.audio_float_array, rate // gcd, chunk.sample_rate // gcd)
                 samples = np.clip(samples * 32767, -32767, 32767).astype(np.int16)
-                data = np.repeat(samples[:, None], channels, axis=1).tobytes()
+                rendered = np.zeros((len(samples), channels), dtype=np.int16)
+                rendered[:, :min(2, channels)] = samples[:, None]
+                data = rendered.tobytes()
                 step = rate // 20 * 2 * channels
                 for offset in range(0, len(data), step):
                     if self.stopped.is_set():

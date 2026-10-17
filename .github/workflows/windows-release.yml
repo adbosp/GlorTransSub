@@ -135,16 +135,24 @@ jobs:
           }
       - name: Retain build output and validation reports
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: windows-release-${{ env.RELEASE_VERSION }}
           if-no-files-found: warn
+          retention-days: 7
           path: |
-            dist/*.zip
             dist/SHA256SUMS.txt
             build/*smoke.json
             build/*.log
             build/GloSub/warn-*.txt
+      - name: Retain ZIP for build-only runs
+        if: success() && !startsWith(github.ref, 'refs/tags/v') && !(github.event_name == 'workflow_dispatch' && inputs.publish)
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-zip-${{ env.RELEASE_VERSION }}
+          retention-days: 1
+          path: dist/*.zip
       - name: Publish validated GitHub Release
         if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.publish)
         shell: pwsh

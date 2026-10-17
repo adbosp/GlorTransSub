@@ -212,6 +212,24 @@ class CaptureResources(unittest.TestCase):
         self.assertTrue(worker._stop)
 
 
+class SpeechOCRResources(unittest.TestCase):
+    def test_speech_session_releases_ocr_without_initializing_another_reader(self):
+        scope = load_workers(None)
+        current_reader = Mock()
+        retained = weakref.ref(current_reader)
+        initialize = Mock()
+        scope.update(reader=current_reader, reader_language='en', torch=torch,
+                     init_ocr_reader=initialize)
+        del current_reader
+        worker = scope['OCRWorker'](5)
+        worker.speech_active = True
+        worker.msleep = lambda _: setattr(worker, '_stop', True)
+        worker.run()
+        self.assertIsNone(scope['reader'])
+        self.assertIsNone(retained())
+        initialize.assert_not_called()
+
+
 class VoiceResources(unittest.TestCase):
     def setUp(self):
         self.scope = load_workers(None)
