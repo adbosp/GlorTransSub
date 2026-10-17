@@ -32,8 +32,14 @@ hiddenimports = [
 binaries = []
 if find_spec("faster_whisper") is not None:
     datas += collect_data_files("faster_whisper")  # bundled Silero VAD graph
-    datas += collect_data_files("piper", includes=["espeak-ng-data/**/*"])
+    # Piper imports ONNX Runtime at its package entry point. Keep Piper raw as
+    # well so the shared scanner cannot import ONNX indirectly through it.
+    datas += collect_data_files("piper", include_py_files=True,
+                               includes=["*.py", "**/*.py", "espeak-ng-data/**/*"])
     binaries += collect_dynamic_libs("piper")
+    _, piper_dir = get_package_paths("piper")
+    for pattern in ("*.pyd", "*.so"):
+        binaries += [(str(path), "piper") for path in Path(piper_dir).glob(pattern)]
     # As with SentencePiece below, ONNX Runtime works in the application but
     # crashes PyInstaller's reused DLL-probing process after Torch/Qt imports.
     # Ship its Python/native package explicitly without importing it in that
@@ -45,8 +51,7 @@ if find_spec("faster_whisper") is not None:
         if native.is_file() and (native.suffix in (".pyd", ".so") or ".so." in native.name):
             target = str(Path("onnxruntime") / native.parent.relative_to(onnx_dir))
             binaries.append((str(native), target))
-    hiddenimports += ["faster_whisper", "piper", "piper.voice", "piper.config",
-                      "piper.phonemize_espeak", "piper.espeakbridge", "pyaudiowpatch",
+    hiddenimports += ["faster_whisper", "pyaudiowpatch",
                       "tokenizers", "huggingface_hub", "flatbuffers", "packaging"]
 if find_spec("ctranslate2") is not None:
     datas += collect_data_files("ctranslate2")
@@ -93,6 +98,7 @@ a = Analysis(
         "ctranslate2.specs",
         "sentencepiece",  # shipped above as a raw package, not omitted
         "onnxruntime",  # shipped above as a raw package, not omitted
+        "piper",  # avoids indirect ONNX imports in the DLL scanner
     ],
     noarchive=False,
     optimize=1,
