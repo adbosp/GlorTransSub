@@ -52,7 +52,7 @@ if find_spec("faster_whisper") is not None:
             target = str(Path("onnxruntime") / native.parent.relative_to(onnx_dir))
             binaries.append((str(native), target))
     hiddenimports += ["faster_whisper", "pyaudiowpatch",
-                      "tokenizers", "huggingface_hub", "flatbuffers", "packaging"]
+                      "tokenizers", "huggingface_hub", "flatbuffers", "packaging", "wave"]
 if find_spec("ctranslate2") is not None:
     datas += collect_data_files("ctranslate2")
     binaries += collect_dynamic_libs("ctranslate2")
