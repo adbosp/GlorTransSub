@@ -618,6 +618,10 @@ def is_run_on_startup() -> bool:
 def toggle_ocr_and_subtitle():
     global worker, overlay, voice_speaker
 
+    if speech_panel is not None and speech_panel._active:
+        speech_panel.stop()
+        return
+
     if worker is None or overlay is None:
         return
 
@@ -1097,6 +1101,7 @@ reader = None
 reader_language = None
 OCR_DEVICE_STATUS = "Detecting..."
 voice_speaker = None
+speech_panel = None
 worker = None
 current_hotkey = None
 current_hotkey_subtitle = None
@@ -2607,14 +2612,13 @@ class OCRWorker(QtCore.QThread):
     def run(self):
         global RED_REGION, reader, reader_language
 
-        # lazy-init OCR reader inside worker thread
-        if reader is None:
-            try:
-                init_ocr_reader(cfg.get("ocr_lang", "en"))
-            except Exception as e:
-                print("[OCR] Failed to initialize reader:", e)
-
         while not self._stop:
+            if getattr(self, 'speech_active', False):
+                # Release the OCR model from its owning thread. Audio-only
+                # sessions should not retain unused OCR weights or scan frames.
+                reader = reader_language = None
+                self.msleep(100)
+                continue
             if not self.running:
                 self.msleep(200)
                 continue
@@ -3857,6 +3861,33 @@ class SettingsPanel(QtWidgets.QWidget):
         general_layout = create_scroll_tab("General")
         subtitle_layout = create_scroll_tab("Subtitle")
         context_tab_layout = create_scroll_tab("Context")
+        speech_layout = create_scroll_tab("Speech → Vietnamese")
+        from speech_panel import SpeechPanel
+        global speech_panel
+        def speech_translator(source, engine):
+            if engine == 'opus_mt':
+                from opus_mt import OpusMTEngine
+                local = OpusMTEngine(cfg.get('opus_mt_model_dir', ''))
+                if local.source_lang != source or local.target_lang != 'vi':
+                    raise ValueError('Choose an OPUS-MT model matching the spoken language → vi in General, then save Settings.')
+                return local.translate
+            local = SmartTranslator()
+            local.configure('google')
+            return local.translate
+        speech_panel = SpeechPanel(cfg, speech_translator, lambda: save_config(cfg), self)
+        speech_layout.addWidget(speech_panel)
+        def speech_active(active):
+            worker.speech_active = active
+            if active:
+                voice_speaker.cancel_pending()
+                self.overlay.update_text('')
+                self.overlay.reset_to_base_region()
+            elif worker.running:
+                voice_speaker.resume_pending()
+        speech_panel.active_changed.connect(speech_active)
+        speech_panel.subtitle_ready.connect(
+            lambda _source, target: self.overlay.update_text(target)
+            if speech_panel._active and worker.running else None)
         about_layout = create_scroll_tab("About")
 
         general_top = QtWidgets.QHBoxLayout()
@@ -4770,7 +4801,8 @@ def main():
     # expose worker as module-global so SettingsPanel can pause/resume it safely
     global worker
     worker = OCRWorker(CAPTURE_FPS)
-    worker.subtitle_ready.connect(overlay.update_text)
+    worker.subtitle_ready.connect(lambda text: overlay.update_text(text)
+                                  if not getattr(worker, 'speech_active', False) else None)
     worker.subtitle_move.connect(overlay.move_near_mouse)
     global voice_speaker
     voice_settings = cfg.get("settings", {})
@@ -4786,7 +4818,8 @@ def main():
         model=tts_profile.get("model", ""),
         provider_fields=tts_fields,
     )
-    worker.subtitle_ready.connect(voice_speaker.speak)
+    worker.subtitle_ready.connect(lambda text: voice_speaker.speak(text)
+                                  if not getattr(worker, 'speech_active', False) else None)
     worker.start()   # ✅ START DUY NHẤT 1 LẦN
     
     # ===== SETTINGS PANEL =====
@@ -4877,6 +4910,8 @@ def main():
 
     # ====================== CLEANUP ON EXIT ======================
     def on_exit():
+        if speech_panel is not None:
+            speech_panel.stop()
         try:
             worker.stop()
             worker.wait(1500)

@@ -10,6 +10,7 @@ datas = [
     ("subtitle_config.json", "."),
     ("icon.ico", "."),
     ("requirements-gpu.txt", "."),
+    ("THIRD_PARTY_SPEECH.md", "."),
     ("assets", "assets"),
 ]
 datas += collect_data_files("easyocr")
@@ -29,6 +30,13 @@ hiddenimports = [
 # Optional offline runtime is bundled only when installed in the build venv.
 # Converted model weights remain external, selected by the user in Settings.
 binaries = []
+if find_spec("faster_whisper") is not None:
+    datas += collect_data_files("faster_whisper")  # bundled Silero VAD graph
+    datas += collect_data_files("piper")  # espeak-ng phoneme dictionaries
+    binaries += collect_dynamic_libs("piper")
+    hiddenimports += ["faster_whisper", "piper", "piper.voice", "piper.config",
+                      "piper.phonemize_espeak", "piper.espeakbridge", "pyaudiowpatch",
+                      "onnxruntime", "tokenizers", "huggingface_hub"]
 if find_spec("ctranslate2") is not None:
     datas += collect_data_files("ctranslate2")
     binaries += collect_dynamic_libs("ctranslate2")
@@ -69,9 +77,7 @@ a = Analysis(
         # Offline runtime uses CTranslate2/SentencePiece; these packages are
         # conversion-only and otherwise drag hundreds of unused models in.
         "transformers",
-        "tokenizers",
         "safetensors",
-        "huggingface_hub",
         "ctranslate2.converters",
         "ctranslate2.specs",
         "sentencepiece",  # shipped above as a raw package, not omitted
@@ -110,5 +116,5 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name="GloSub-v1.1.2-Windows-x64",
+    name="GloSub-v1.2.0-Windows-x64",
 )

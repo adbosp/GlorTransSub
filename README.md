@@ -237,3 +237,7 @@ The virtual environment directory (.venv) is intentionally excluded from the rep
 Always activate the virtual environment before running or building the project
 
 If you encounter missing module errors, ensure all dependencies are installed inside the active virtual environment
+# Vietnamese game/video dubbing
+
+Settings → **Speech → Vietnamese** adds local Tiny ASR → OPUS-MT → Piper speech.
+OCR pauses while dubbing. See [setup, output routing and limits](docs/speech-translation.md).

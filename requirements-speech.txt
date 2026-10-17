@@ -1,0 +1,8 @@
+# Optional local speech-to-speech runtime (CPU, no CUDA requirement).
+-r requirements-opus.txt
+faster-whisper==1.2.1
+# PyAV 19 removed metadata_errors used by faster-whisper 1.2.1.
+av==16.1.0
+piper-tts==1.8.0
+onnxruntime==1.31.0
+PyAudioWPatch==0.2.12.9; sys_platform == 'win32'

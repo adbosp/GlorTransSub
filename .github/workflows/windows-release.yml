@@ -25,7 +25,7 @@ jobs:
     permissions:
       contents: write
     env:
-      RELEASE_VERSION: '1.1.2'
+      RELEASE_VERSION: '1.2.0'
       PIP_DISABLE_PIP_VERSION_CHECK: '1'
       PIP_NO_CACHE_DIR: '1'
       PYTHONUTF8: '1'
@@ -49,7 +49,7 @@ jobs:
       - name: Install CPU PyTorch
         run: python scripts/ci_run.py cpu-pytorch -- python -m pip install --index-url https://download.pytorch.org/whl/cpu torch==2.13.0 torchvision==0.28.0
       - name: Install application, offline conversion and build dependencies
-        run: python scripts/ci_run.py dependencies -- python -m pip install -r requirements.txt -r requirements-opus-build.txt -r requirements-build.txt
+        run: python scripts/ci_run.py dependencies -- python -m pip install -r requirements.txt -r requirements-opus-build.txt -r requirements-speech.txt -r requirements-build.txt
       - name: Check dependencies
         run: python scripts/ci_run.py dependency-check -- python -m pip check
       - name: Run portable regression and conversion tests
@@ -64,8 +64,15 @@ jobs:
           Path('models/easyocr-user').mkdir(parents=True, exist_ok=True);
           easyocr.Reader(['en'], gpu=False, verbose=False,
           model_storage_directory='models/easyocr', user_network_directory='models/easyocr-user')"
+      - name: Prepare local speech models
+        run: python scripts/ci_run.py speech-models -- python prepare_speech_models.py --output models/speech --model tiny.en
+      - name: Download licensed Whisper test recording
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force models/speech/test-audio | Out-Null
+          Invoke-WebRequest https://raw.githubusercontent.com/openai/whisper/main/tests/jfk.flac -OutFile models/speech/test-audio/jfk.flac
       - name: Remove conversion-only dependencies before packaging
-        run: python scripts/ci_run.py runtime-only -- python -m pip uninstall -y transformers tokenizers safetensors huggingface-hub
+        run: python scripts/ci_run.py runtime-only -- python -m pip uninstall -y transformers safetensors
       - name: Check source Windows runtime and actual language models
         run: python scripts/ci_run.py source-smoke -- python release_checks.py --model-root models --report build/source-smoke.json
       - name: Build Windows application
@@ -77,6 +84,9 @@ jobs:
           Copy-Item models "$app/models" -Recurse
           Copy-Item "RELEASE_NOTES_v$env:RELEASE_VERSION.md" "$app/README.txt"
           Copy-Item LICENSE "$app/LICENSE.txt"
+          Copy-Item THIRD_PARTY_SPEECH.md "$app/THIRD_PARTY_SPEECH.md"
+          python scripts/prepare_speech_notices.py "$app"
+          if ($LASTEXITCODE -ne 0) { throw 'Speech source/license packaging failed.' }
       - name: Check the packaged executable
         shell: pwsh
         run: |
