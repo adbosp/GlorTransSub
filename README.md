@@ -63,7 +63,7 @@ This repository represents an early-stage prototype focused on validating the co
 
 ## Windows Release (No installation required)
 
-1. Download `GloSub-v1.1.2-Windows-x64.zip` from GitHub Releases.
+1. Download [GloSub-v1.2.0-Windows-x64.zip](https://github.com/adbosp/GlorTransSub/releases/download/v1.2.0/GloSub-v1.2.0-Windows-x64.zip) from GitHub Releases.
 2. Extract the entire ZIP to a normal writable folder.
 3. Open `GloSub.exe`. Keep the `_internal` folder next to the EXE.
 
@@ -237,6 +237,7 @@ The virtual environment directory (.venv) is intentionally excluded from the rep
 Always activate the virtual environment before running or building the project
 
 If you encounter missing module errors, ensure all dependencies are installed inside the active virtual environment
+
 # Vietnamese game/video dubbing
 
 Settings → **Speech → Vietnamese** adds local Tiny ASR → OPUS-MT → Piper speech.
