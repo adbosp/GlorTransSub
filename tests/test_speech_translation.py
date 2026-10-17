@@ -5,6 +5,7 @@ import queue
 import sys
 import tempfile
 import threading
+from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, MagicMock, patch
 
@@ -70,8 +71,8 @@ class SpeechResources(unittest.TestCase):
             session._capture = capture
             session._play = Mock()
             devices = ([dict(index=1, render_index=2, default=True)], [dict(index=2)], 2)
-            with patch.dict(sys.modules, {'pyaudiowpatch': pa}), \
-                 patch('faster_whisper.WhisperModel', return_value=model), \
+            with patch.dict(sys.modules, {'pyaudiowpatch': pa,
+                 'faster_whisper': SimpleNamespace(WhisperModel=Mock(return_value=model))}), \
                  patch('speech_translation.audio_devices', return_value=devices), \
                  patch('speech_translation.load_voice', return_value=Mock()):
                 session.start()
@@ -91,6 +92,44 @@ class SpeechResources(unittest.TestCase):
         self.assertEqual(session.clips.qsize(), 0)
         session.stop()
         self.assertTrue(session.stopped.is_set())
+
+    def test_shared_output_does_not_enqueue_the_dubbed_voice(self):
+        session = SpeechSession(SpeechOptions('', ''), Mock())
+        session.speaking.set()
+        pa = MagicMock()
+        stream = pa.PyAudio.return_value.__enter__.return_value.open.return_value
+        counter = 0
+        def read(*args, **kwargs):
+            nonlocal counter
+            counter += 1
+            if counter == 80:
+                session.stopped.set()
+            return np.full((2400, 2), 0.1, dtype=np.float32).tobytes()
+        stream.read.side_effect = read
+        with patch.dict(sys.modules, {'pyaudiowpatch': pa}):
+            session._capture(dict(defaultSampleRate=48000, maxInputChannels=2, index=1))
+        self.assertEqual(session.clips.qsize(), 0)
+        stream.close.assert_called_once()
+
+    def test_playback_uses_native_device_format_and_stops_between_blocks(self):
+        session = SpeechSession(SpeechOptions('', ''), Mock())
+        session.same_output = False
+        audio = MagicMock()
+        audio.get_device_info_by_index.return_value = dict(defaultSampleRate=48000, maxOutputChannels=2)
+        stream = audio.open.return_value
+        stream.write.side_effect = lambda *_: session.stopped.set()
+        voice = Mock()
+        voice.synthesize.return_value = iter([SimpleNamespace(sample_rate=22050,
+            audio_float_array=np.ones(22050, dtype=np.float32) * 0.1)])
+        with patch.dict(sys.modules, {'pyaudiowpatch': MagicMock(),
+             'piper.config': SimpleNamespace(SynthesisConfig=Mock())}):
+            session._play(audio, voice, 'Xin chào', 2)
+        self.assertEqual(audio.open.call_args.kwargs['rate'], 48000)
+        self.assertEqual(audio.open.call_args.kwargs['channels'], 2)
+        self.assertEqual(stream.write.call_count, 1)
+        self.assertLessEqual(len(stream.write.call_args.args[0]), 48000 // 20 * 4)
+        stream.close.assert_called_once()
+        self.assertFalse(session.speaking.is_set())
 
 
 @unittest.skipUnless(os.environ.get('GLOSUB_SPEECH_MODEL_ROOT'), 'Real speech models not selected')
